@@ -37,6 +37,17 @@ class YahooFinanceCollector:
                 'Close': 'close', 'Volume': 'volume'
             })
             df.index = pd.to_datetime(df.index).tz_localize(None)
+
+            # 异常 tick 清洗：偏离 5 日中位价 > 15% 视为坏点（如数据源返回 0 / 10 倍价）
+            # 线性插值修正，防止污染 EMA / MACD / RSI 等技术指标（典型表现：MACD 飙到数千）
+            if len(df) > 5:
+                med = df['close'].rolling(5, center=True, min_periods=1).median()
+                bad = (df['close'] / med - 1.0).abs() > 0.15
+                if bad.any():
+                    logger.warning(f"[Yahoo] {symbol}: 修正 {int(bad.sum())} 个异常 tick")
+                    df.loc[bad, ['open', 'high', 'low', 'close']] = np.nan
+                    df = df.interpolate(method='linear', limit_direction='both').bfill().ffill()
+
             logger.info(f"[Yahoo] {symbol}: {len(df)} 条记录, 最新 {df.index[-1].date()}")
             return df
             
