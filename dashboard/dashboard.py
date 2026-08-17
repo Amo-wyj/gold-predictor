@@ -128,6 +128,7 @@ def init_dashboard():
 @app.route("/")
 def index():
     """主页"""
+    _ensure_prediction()
     return render_template("dashboard.html",
                           price=latest_price,
                           prediction=latest_prediction,
@@ -137,6 +138,7 @@ def index():
 @app.route("/api/predict")
 def api_predict():
     """获取最新预测"""
+    _ensure_prediction()
     return jsonify({
         "status": "success",
         "price": latest_price,
