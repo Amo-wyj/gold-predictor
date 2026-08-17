@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🥇 黄金预测系统</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+    <style>
+        body { background: #0f172a; color: #e2e8f0; }
+        .card { background: #1e293b; border-radius: 12px; padding: 20px; }
+        .signal-strong-buy { color: #22c55e; font-weight: bold; }
+        .signal-buy { color: #84cc16; }
+        .signal-neutral { color: #94a3b8; }
+        .signal-sell { color: #f97316; }
+        .signal-strong-sell { color: #ef4444; font-weight: bold; }
+        .price-up { color: #22c55e; }
+        .price-down { color: #ef4444; }
+        .glow-green { box-shadow: 0 0 20px rgba(34, 197, 94, 0.3); }
+        .glow-red { box-shadow: 0 0 20px rgba(239, 68, 68, 0.3); }
+    </style>
+</head>
+<body class="min-h-screen p-6">
+    <!-- 顶部导航 -->
+    <header class="mb-6 flex justify-between items-center">
+        <div class="flex items-center gap-3">
+            <span class="text-4xl">🥇</span>
+            <div>
+                <h1 class="text-2xl font-bold">黄金预测系统</h1>
+                <p class="text-slate-400 text-sm">Gold Prediction System</p>
+            </div>
+        </div>
+        <div class="text-right">
+            <div id="current-price" class="text-3xl font-bold text-yellow-400">--</div>
+            <div id="price-change" class="text-sm">--</div>
+        </div>
+    </header>
+
+    <!-- 核心预测卡片 -->
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+        <!-- 明日预测 -->
+        <div class="card">
+            <div class="text-slate-400 text-sm mb-2">📍 明日预测</div>
+            <div id="signal-1d" class="text-2xl font-bold mb-2">--</div>
+            <div class="flex justify-between text-sm">
+                <span class="text-slate-400">上涨概率</span>
+                <span id="prob-up-1d" class="font-bold">--</span>
+            </div>
+            <div class="flex justify-between text-sm mt-1">
+                <span class="text-slate-400">下跌概率</span>
+                <span id="prob-down-1d" class="font-bold">--</span>
+            </div>
+            <div class="flex justify-between text-sm mt-1">
+                <span class="text-slate-400">置信度</span>
+                <span id="conf-1d" class="font-bold">--</span>
+            </div>
+        </div>
+
+        <!-- 3日后预测 -->
+        <div class="card">
+            <div class="text-slate-400 text-sm mb-2">📍 3日后预测</div>
+            <div id="signal-3d" class="text-2xl font-bold mb-2">--</div>
+            <div class="flex justify-between text-sm">
+                <span class="text-slate-400">上涨概率</span>
+                <span id="prob-up-3d" class="font-bold">--</span>
+            </div>
+            <div class="flex justify-between text-sm mt-1">
+                <span class="text-slate-400">下跌概率</span>
+                <span id="prob-down-3d" class="font-bold">--</span>
+            </div>
+            <div class="flex justify-between text-sm mt-1">
+                <span class="text-slate-400">置信度</span>
+                <span id="conf-3d" class="font-bold">--</span>
+            </div>
+        </div>
+
+        <!-- 5日后预测 -->
+        <div class="card">
+            <div class="text-slate-400 text-sm mb-2">📍 5日后预测</div>
+            <div id="signal-5d" class="text-2xl font-bold mb-2">--</div>
+            <div class="flex justify-between text-sm">
+                <span class="text-slate-400">上涨概率</span>
+                <span id="prob-up-5d" class="font-bold">--</span>
+            </div>
+            <div class="flex justify-between text-sm mt-1">
+                <span class="text-slate-400">下跌概率</span>
+                <span id="prob-down-5d" class="font-bold">--</span>
+            </div>
+            <div class="flex justify-between text-sm mt-1">
+                <span class="text-slate-400">置信度</span>
+                <span id="conf-5d" class="font-bold">--</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- 图表区域 -->
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
+        <!-- 价格走势图 -->
+        <div class="card">
+            <h3 class="text-lg font-bold mb-4">📈 黄金价格走势</h3>
+            <div id="price-chart" style="height: 300px;"></div>
+        </div>
+
+        <!-- RSI & MACD -->
+        <div class="card">
+            <h3 class="text-lg font-bold mb-4">📊 技术指标</h3>
+            <div id="indicators-chart" style="height: 300px;"></div>
+        </div>
+    </div>
+
+    <!-- 技术指标详情 -->
+    <div class="card mb-6">
+        <h3 class="text-lg font-bold mb-4">🔧 技术分析</h3>
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-4" id="tech-indicators">
+            <div class="text-center p-4 bg-slate-800 rounded-lg">
+                <div class="text-slate-400 text-sm">RSI(14)</div>
+                <div id="rsi-value" class="text-2xl font-bold mt-2">--</div>
+                <div id="rsi-signal" class="text-sm text-slate-400">--</div>
+            </div>
+            <div class="text-center p-4 bg-slate-800 rounded-lg">
+                <div class="text-slate-400 text-sm">MACD</div>
+                <div id="macd-value" class="text-2xl font-bold mt-2">--</div>
+                <div id="macd-signal" class="text-sm text-slate-400">--</div>
+            </div>
+            <div class="text-center p-4 bg-slate-800 rounded-lg">
+                <div class="text-slate-400 text-sm">布林带位置</div>
+                <div id="bb-value" class="text-2xl font-bold mt-2">--</div>
+                <div id="bb-signal" class="text-sm text-slate-400">--</div>
+            </div>
+            <div class="text-center p-4 bg-slate-800 rounded-lg">
+                <div class="text-slate-400 text-sm">ADX</div>
+                <div id="adx-value" class="text-2xl font-bold mt-2">--</div>
+                <div id="adx-signal" class="text-sm text-slate-400">--</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 页脚 -->
+    <footer class="text-center text-slate-500 text-sm mt-8">
+        <p>更新时间: <span id="update-time">--</span></p>
+        <p class="mt-1">⚠️ 本系统仅供辅助决策，不构成投资建议</p>
+    </footer>
+
+    <script>
+        // 加载预测数据
+        async function loadPrediction() {
+            try {
+                const resp = await fetch('/api/predict');
+                const data = await resp.json();
+                
+                if (data.price) {
+                    document.getElementById('current-price').textContent = '$' + data.price.toFixed(2);
+                }
+                
+                if (data.prediction) {
+                    updatePredictionCards(data.prediction);
+                }
+                
+                document.getElementById('update-time').textContent = new Date().toLocaleString('zh-CN');
+            } catch (e) {
+                console.error('加载预测失败:', e);
+            }
+        }
+
+        function updatePredictionCards(prediction) {
+            const horizons = [
+                { key: 'horizon_1d', suffix: '1d' },
+                { key: 'horizon_3d', suffix: '3d' },
+                { key: 'horizon_5d', suffix: '5d' }
+            ];
+            
+            horizons.forEach(({ key, suffix }) => {
+                const p = prediction[key];
+                if (p) {
+                    // 信号
+                    const signalEl = document.getElementById(`signal-${suffix}`);
+                    signalEl.textContent = p.signal || '--';
+                    signalEl.className = `text-2xl font-bold mb-2 ${getSignalClass(p.signal)}`;
+                    
+                    // 概率
+                    document.getElementById(`prob-up-${suffix}`).textContent = (p.probability_up * 100).toFixed(1) + '%';
+                    document.getElementById(`prob-down-${suffix}`).textContent = (p.probability_down * 100).toFixed(1) + '%';
+                    document.getElementById(`conf-${suffix}`).textContent = p.confidence_label || '--';
+                    
+                    // 卡片发光效果
+                    const card = signalEl.closest('.card');
+                    card.classList.remove('glow-green', 'glow-red');
+                    if (p.probability_up > 0.65) card.classList.add('glow-green');
+                    if (p.probability_down > 0.65) card.classList.add('glow-red');
+                }
+            });
+        }
+
+        function getSignalClass(signal) {
+            if (!signal) return 'text-slate-400';
+            if (signal.includes('STRONG_BUY')) return 'signal-strong-buy';
+            if (signal.includes('BUY')) return 'signal-buy';
+            if (signal.includes('STRONG_SELL')) return 'signal-strong-sell';
+            if (signal.includes('SELL')) return 'signal-sell';
+            return 'signal-neutral';
+        }
+
+        // 加载价格图表
+        async function loadPriceChart() {
+            try {
+                const resp = await fetch('/api/chart/price');
+                const data = await resp.json();
+                
+                if (data.dates) {
+                    Plotly.newPlot('price-chart', [{
+                        x: data.dates,
+                        y: data.prices,
+                        type: 'scatter',
+                        mode: 'lines',
+                        name: '黄金价格',
+                        line: { color: '#fbbf24', width: 2 }
+                    }], {
+                        paper_bgcolor: 'transparent',
+                        plot_bgcolor: 'transparent',
+                        font: { color: '#94a3b8' },
+                        xaxis: { gridcolor: '#334155', zerolinecolor: '#334155' },
+                        yaxis: { gridcolor: '#334155', zerolinecolor: '#334155' },
+                        margin: { t: 10, r: 10, b: 30, l: 50 }
+                    });
+                }
+            } catch (e) {
+                console.error('加载价格图表失败:', e);
+            }
+        }
+
+        // 加载技术指标图表
+        async function loadIndicatorsChart() {
+            try {
+                const resp = await fetch('/api/chart/indicators');
+                const data = await resp.json();
+                
+                if (data.dates) {
+                    const traces = [
+                        {
+                            x: data.dates, y: data.rsi, name: 'RSI(14)', yaxis: 'y',
+                            type: 'scatter', mode: 'lines', line: { color: '#a855f7', width: 1 }
+                        }
+                    ];
+                    
+                    const layout = {
+                        paper_bgcolor: 'transparent',
+                        plot_bgcolor: 'transparent',
+                        font: { color: '#94a3b8', size: 10 },
+                        xaxis: { gridcolor: '#334155', showgrid: true },
+                        yaxis: { 
+                            gridcolor: '#334155', 
+                            domain: [0.6, 1],
+                            range: [0, 100],
+                            title: 'RSI'
+                        },
+                        yaxis2: {
+                            gridcolor: '#334155',
+                            domain: [0, 0.4],
+                            title: 'MACD'
+                        },
+                        margin: { t: 10, r: 10, b: 30, l: 50 },
+                        legend: { orientation: 'h', y: 1.1 }
+                    };
+                    
+                    Plotly.newPlot('indicators-chart', traces, layout);
+                }
+            } catch (e) {
+                console.error('加载指标图表失败:', e);
+            }
+        }
+
+        // 加载实时价格
+        async function loadLivePrice() {
+            try {
+                const resp = await fetch('/api/price');
+                const data = await resp.json();
+                
+                if (data.price) {
+                    const priceEl = document.getElementById('current-price');
+                    priceEl.textContent = '$' + data.price.toFixed(2);
+                    
+                    const changeEl = document.getElementById('price-change');
+                    const change = data.change_pct;
+                    changeEl.textContent = (change >= 0 ? '▲ ' : '▼ ') + change.toFixed(2) + '%';
+                    changeEl.className = change >= 0 ? 'text-sm price-up' : 'text-sm price-down';
+                }
+            } catch (e) {
+                console.error('加载实时价格失败:', e);
+            }
+        }
+
+        // 初始化
+        document.addEventListener('DOMContentLoaded', () => {
+            loadPrediction();
+            loadPriceChart();
+            loadIndicatorsChart();
+            loadLivePrice();
+            
+            // 每分钟刷新
+            setInterval(() => {
+                loadLivePrice();
+                loadPrediction();
+            }, 60000);
+        });
+    </script>
+</body>
+</html>
