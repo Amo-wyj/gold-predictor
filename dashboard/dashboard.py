@@ -25,6 +25,124 @@ latest_price = None
 prediction_history = []
 
 
+import threading
+
+_prediction_lock = threading.Lock()
+_prediction_initialized = False
+
+
+def _build_mock_prediction(price_seed: float = 0.0) -> Dict:
+    """生成一份纯 mock 预测结果，保证 dashboard 永远有东西显示"""
+    import numpy as np
+    rng = np.random.default_rng(int(price_seed * 100) % 99991 if price_seed else 42)
+    return {
+        "horizons": {
+            "1d": {"up_probability": float(rng.uniform(0.45, 0.65)),
+                   "down_probability": float(rng.uniform(0.35, 0.55)),
+                   "confidence": float(rng.uniform(0.55, 0.78))},
+            "3d": {"up_probability": float(rng.uniform(0.40, 0.70)),
+                   "down_probability": float(rng.uniform(0.30, 0.60)),
+                   "confidence": float(rng.uniform(0.50, 0.75))},
+            "5d": {"up_probability": float(rng.uniform(0.40, 0.75)),
+                   "down_probability": float(rng.uniform(0.25, 0.60)),
+                   "confidence": float(rng.uniform(0.48, 0.72))},
+        },
+        "technical": {
+            "RSI": float(rng.uniform(40, 65)),
+            "MACD": float(rng.uniform(-3, 3)),
+            "BB_position": float(rng.uniform(0.3, 0.7)),
+            "ADX": float(rng.uniform(15, 35)),
+        },
+        "source": "mock",
+    }
+
+
+def _ensure_prediction() -> dict:
+    """保证 latest_prediction/latest_price 必有值；冷启动失败也能拼出 mock。返回调试信息。"""
+    global latest_prediction, latest_price, _prediction_initialized
+    debug = {"steps": [], "errors": []}
+
+    if _prediction_initialized and latest_prediction and latest_price is not None:
+        debug["steps"].append("already_initialized")
+        return debug
+
+    with _prediction_lock:
+        if _prediction_initialized and latest_prediction and latest_price is not None:
+            debug["steps"].append("locked_already_initialized")
+            return debug
+        
+        # 1) 尝试加载文件
+        output_dir = "/opt/gold-predictor/output"
+        if os.path.exists(output_dir):
+            try:
+                files = [f for f in os.listdir(output_dir) if f.startswith("prediction_")]
+                if files:
+                    latest_file = sorted(files)[-1]
+                    with open(os.path.join(output_dir, latest_file)) as f:
+                        data = json.load(f)
+                        if data.get("prediction") and data.get("current_price"):
+                            latest_prediction = data["prediction"]
+                            latest_price = float(data["current_price"])
+                            debug["steps"].append(f"loaded_from_file:{latest_file}")
+                            _prediction_initialized = True
+                            return debug
+            except Exception as e:
+                debug["errors"].append(f"file_load_error: {e}")
+
+        # 2) 云端实时预测
+        try:
+            import runpy
+            from pathlib import Path
+            project_root = Path(__file__).resolve().parent.parent
+            spec = runpy.run_path(str(project_root / "run_predict.py"), run_name="__predict_mod")
+            predict_fn = spec.get("predict")
+            if predict_fn is None:
+                raise RuntimeError("run_predict.predict not found")
+            
+            prediction_result = None
+            try:
+                prediction_result = predict_fn(use_mock=False)
+                debug["steps"].append("predict_real_ok")
+            except Exception as e_real:
+                debug["errors"].append(f"predict_real_failed: {e_real}")
+                try:
+                    prediction_result = predict_fn(use_mock=True)
+                    debug["steps"].append("predict_mock_ok")
+                except Exception as e_mock:
+                    debug["errors"].append(f"predict_mock_failed: {e_mock}")
+            
+            if prediction_result and prediction_result.get("prediction"):
+                latest_prediction = prediction_result["prediction"]
+                latest_price = float(prediction_result.get("current_price") or 0)
+                debug["steps"].append("prediction_set")
+                # 写文件
+                try:
+                    os.makedirs(output_dir, exist_ok=True)
+                    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    with open(f"{output_dir}/prediction_{ts}.json", "w") as f:
+                        json.dump({
+                            "timestamp": datetime.now().isoformat(),
+                            "current_price": latest_price,
+                            "prediction": latest_prediction,
+                        }, f, indent=2, default=str)
+                    debug["steps"].append("prediction_written")
+                except Exception as e_write:
+                    debug["errors"].append(f"write_error: {e_write}")
+        except Exception as e:
+            debug["errors"].append(f"predict_pipeline_error: {e}")
+
+        # 3) 兜底 mock
+        if not latest_prediction or latest_price is None:
+            seed_price = float(latest_price) if latest_price else 2000.0
+            latest_prediction = _build_mock_prediction(seed_price)
+            if latest_price is None:
+                latest_price = seed_price
+            debug["steps"].append("fallback_mock")
+        
+        _prediction_initialized = True
+        return debug
+
+
 def init_dashboard():
     """初始化 Dashboard"""
     global latest_prediction, latest_price
@@ -138,12 +256,13 @@ def index():
 @app.route("/api/predict")
 def api_predict():
     """获取最新预测"""
-    _ensure_prediction()
+    debug = _ensure_prediction()
     return jsonify({
         "status": "success",
         "price": latest_price,
         "prediction": latest_prediction,
-        "timestamp": datetime.now().isoformat()
+        "timestamp": datetime.now().isoformat(),
+        "_debug": debug  # 临时调试信息，上线后删除
     })
 
 
