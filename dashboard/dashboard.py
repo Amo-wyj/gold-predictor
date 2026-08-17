@@ -26,14 +26,64 @@ CORS(app)
 
 # 全局状态
 latest_prediction = {}
+latest_technical = {}  # 技术指标独立存储，供 /api/technical 使用
 latest_price = None
 prediction_history = []
-
 
 import threading
 
 _prediction_lock = threading.Lock()
 _prediction_initialized = False
+
+
+def _normalize_technical(raw: dict) -> dict:
+    """统一技术指标格式：提取 RSI / MACD / Bollinger / ADX 数值与信号。"""
+    out = {}
+    # RSI
+    rsi = raw.get('rsi', raw.get('RSI'))
+    if isinstance(rsi, dict):
+        val = rsi.get('value', rsi.get('rsi_value', 50))
+        sig = rsi.get('signal', '中性')
+        if isinstance(val, (int, float)):
+            sig = '超买' if val > 70 else ('超卖' if val < 30 else '中性')
+        out['RSI'] = {'value': float(val), 'signal': sig}
+    elif isinstance(rsi, (int, float)):
+        sig = '超买' if rsi > 70 else ('超卖' if rsi < 30 else '中性')
+        out['RSI'] = {'value': float(rsi), 'signal': sig}
+    # MACD
+    macd = raw.get('macd', raw.get('MACD'))
+    if isinstance(macd, dict):
+        val = macd.get('value', macd.get('macd', 0))
+        sig = macd.get('signal', '中性')
+        if isinstance(val, (int, float)) and not sig:
+            sig = '看涨' if val > 0 else '看跌'
+        out['MACD'] = {'value': float(val), 'signal': sig}
+    elif isinstance(macd, (int, float)):
+        sig = '看涨' if macd > 0 else '看跌'
+        out['MACD'] = {'value': float(macd), 'signal': sig}
+    # Bollinger Bands
+    bb = raw.get('bollinger', raw.get('BB', raw.get('bollinger_bands')))
+    if isinstance(bb, dict):
+        pos = bb.get('position', bb.get('bb_position', bb.get('value', 0.5)))
+        sig = bb.get('signal', '中性')
+        if isinstance(pos, (int, float)) and not sig:
+            sig = '上轨' if pos > 0.8 else ('下轨' if pos < 0.2 else '中轨')
+        out['Bollinger'] = {'value': float(pos), 'signal': sig}
+    elif isinstance(bb, (int, float)):
+        sig = '上轨' if bb > 0.8 else ('下轨' if bb < 0.2 else '中轨')
+        out['Bollinger'] = {'value': float(bb), 'signal': sig}
+    # ADX
+    adx = raw.get('adx', raw.get('ADX'))
+    if isinstance(adx, dict):
+        val = adx.get('value', adx.get('adx_value', 20))
+        sig = adx.get('signal', '偏弱')
+        if isinstance(val, (int, float)) and not sig:
+            sig = '强势' if val > 25 else '偏弱'
+        out['ADX'] = {'value': float(val), 'signal': sig}
+    elif isinstance(adx, (int, float)):
+        sig = '强势' if adx > 25 else '偏弱'
+        out['ADX'] = {'value': float(adx), 'signal': sig}
+    return out
 
 
 def _build_mock_prediction(price_seed: float = 0.0) -> Dict:
@@ -63,8 +113,8 @@ def _build_mock_prediction(price_seed: float = 0.0) -> Dict:
 
 
 def _ensure_prediction() -> dict:
-    """保证 latest_prediction/latest_price 必有值；冷启动失败也能拼出 mock。返回调试信息。"""
-    global latest_prediction, latest_price, _prediction_initialized
+    """保证 latest_prediction/latest_price/latest_technical 必有值；冷启动失败也能拼出 mock。"""
+    global latest_prediction, latest_technical, latest_price, _prediction_initialized
     debug = {"steps": [], "errors": []}
 
     if _prediction_initialized and latest_prediction and latest_price is not None:
@@ -75,7 +125,7 @@ def _ensure_prediction() -> dict:
         if _prediction_initialized and latest_prediction and latest_price is not None:
             debug["steps"].append("locked_already_initialized")
             return debug
-        
+
         # 1) 尝试加载文件
         output_dir = "/opt/gold-predictor/output"
         if os.path.exists(output_dir):
@@ -87,6 +137,8 @@ def _ensure_prediction() -> dict:
                         data = json.load(f)
                         if data.get("prediction") and data.get("current_price"):
                             latest_prediction = data["prediction"]
+                            raw_tech = data.get("technical_analysis", {})
+                            latest_technical = _normalize_technical(raw_tech)
                             latest_price = float(data["current_price"])
                             debug["steps"].append(f"loaded_from_file:{latest_file}")
                             _prediction_initialized = True
@@ -103,7 +155,7 @@ def _ensure_prediction() -> dict:
             predict_fn = spec.get("predict")
             if predict_fn is None:
                 raise RuntimeError("run_predict.predict not found")
-            
+
             prediction_result = None
             try:
                 prediction_result = predict_fn(use_mock=False)
@@ -115,9 +167,11 @@ def _ensure_prediction() -> dict:
                     debug["steps"].append("predict_mock_ok")
                 except Exception as e_mock:
                     debug["errors"].append(f"predict_mock_failed: {e_mock}")
-            
+
             if prediction_result and prediction_result.get("prediction"):
                 latest_prediction = prediction_result["prediction"]
+                raw_tech = prediction_result.get("technical_analysis", {})
+                latest_technical = _normalize_technical(raw_tech)
                 latest_price = float(prediction_result.get("current_price") or 0)
                 debug["steps"].append("prediction_set")
                 # 写文件
@@ -129,6 +183,7 @@ def _ensure_prediction() -> dict:
                             "timestamp": datetime.now().isoformat(),
                             "current_price": latest_price,
                             "prediction": latest_prediction,
+                            "technical_analysis": raw_tech,
                         }, f, indent=2, default=str)
                     debug["steps"].append("prediction_written")
                 except Exception as e_write:
@@ -142,15 +197,24 @@ def _ensure_prediction() -> dict:
             latest_prediction = _build_mock_prediction(seed_price)
             if latest_price is None:
                 latest_price = seed_price
+            # mock 也填充 technical
+            import numpy as np
+            rng = np.random.default_rng(int(seed_price) % 99991)
+            latest_technical = {
+                "RSI":  {"value": float(rng.uniform(40, 65)), "signal": "中性"},
+                "MACD": {"value": float(rng.uniform(-3, 3)),  "signal": "看跌" if rng.uniform() < 0.5 else "看涨"},
+                "Bollinger": {"value": float(rng.uniform(0.3, 0.7)), "signal": "中轨"},
+                "ADX":  {"value": float(rng.uniform(15, 35)),  "signal": "偏弱"},
+            }
             debug["steps"].append("fallback_mock")
-        
+
         _prediction_initialized = True
         return debug
 
 
 def init_dashboard():
     """初始化 Dashboard"""
-    global latest_prediction, latest_price
+    global latest_prediction, latest_technical, latest_price
 
     # 1) 尝试加载最新预测结果文件
     output_dir = "/opt/gold-predictor/output"
@@ -163,25 +227,25 @@ def init_dashboard():
                 with open(os.path.join(output_dir, latest_file)) as f:
                     data = json.load(f)
                     latest_prediction = data.get("prediction", {})
+                    raw_tech = data.get("technical_analysis", {})
+                    latest_technical = _normalize_technical(raw_tech)
                     latest_price = data.get("current_price")
                     loaded_from_file = True
-                    logger.info(f"从 {latest_file} 加载预测成功")
+                    logger.info(f"从 {latest_file} 加载预测成功，技术指标: {list(latest_technical.keys())}")
             except Exception as e:
                 logger.warning(f"加载预测文件失败: {e}")
 
-    # 2) 云端 / Render 部署：跑一次实时预测（yfinance 可用就用真实数据，不可用自动回退 mock）
+    # 2) 云端 / Render 部署：跑一次实时预测
     if not loaded_from_file or not latest_prediction:
         try:
             import runpy
             from pathlib import Path
             project_root = Path(__file__).resolve().parent.parent
-            # 导入 run_predict 模块并调用 predict()
             spec = runpy.run_path(str(project_root / "run_predict.py"), run_name="__predict_mod")
             result = spec.get("predict")
             if result is None:
                 raise RuntimeError("run_predict.predict 函数未找到")
 
-            # 先试真实数据，失败回退 mock
             prediction_result = None
             try:
                 prediction_result = result(use_mock=False)
@@ -191,8 +255,11 @@ def init_dashboard():
 
             if prediction_result and "prediction" in prediction_result:
                 latest_prediction = prediction_result["prediction"]
+                raw_tech = prediction_result.get("technical_analysis", {})
+                latest_technical = _normalize_technical(raw_tech)
                 latest_price = float(prediction_result.get("current_price", 0) or 0)
-                # 顺手写入 output 文件，供下次重启加载
+                logger.info(f"云端预测完成，技术指标: {list(latest_technical.keys())}")
+                # 写入 output 文件
                 try:
                     os.makedirs(output_dir, exist_ok=True)
                     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -201,47 +268,41 @@ def init_dashboard():
                             "timestamp": datetime.now().isoformat(),
                             "current_price": latest_price,
                             "prediction": latest_prediction,
+                            "technical_analysis": raw_tech,
                         }, f, indent=2, default=str)
-                    logger.info(f"云端预测完成并已写入 {ts}.json")
+                    logger.info(f"预测文件已写入 {ts}.json")
                 except Exception as e_write:
                     logger.warning(f"写入 prediction 文件失败: {e_write}")
         except Exception as e:
             logger.warning(f"云端自启预测失败，使用 mock 兜底: {e}")
 
-    # 3) 兜底：如果仍然没有数据，用 mock 生成一份展示
+    # 3) 兜底：如果仍然没有数据，用 mock
     if not latest_prediction or latest_price is None:
         try:
-            from data.mock_data import get_latest_mock_price, generate_mock_gold_data
+            from data.mock_data import get_latest_mock_price
             import numpy as np
             price_data = get_latest_mock_price()
             latest_price = float(price_data['price'])
-            # 生成轻量 mock 预测结果
-            rng = np.random.default_rng(int(latest_price) % 10000)
+            rng = np.random.default_rng(int(latest_price) % 99991)
             latest_prediction = {
                 "horizons": {
-                    "1d": {
-                        "up_probability": float(rng.uniform(0.45, 0.65)),
-                        "down_probability": float(rng.uniform(0.35, 0.55)),
-                        "confidence": float(rng.uniform(0.55, 0.78))
-                    },
-                    "3d": {
-                        "up_probability": float(rng.uniform(0.40, 0.70)),
-                        "down_probability": float(rng.uniform(0.30, 0.60)),
-                        "confidence": float(rng.uniform(0.50, 0.75))
-                    },
-                    "5d": {
-                        "up_probability": float(rng.uniform(0.40, 0.75)),
-                        "down_probability": float(rng.uniform(0.25, 0.60)),
-                        "confidence": float(rng.uniform(0.48, 0.72))
-                    }
+                    "1d": {"up_probability": float(rng.uniform(0.45, 0.65)),
+                           "down_probability": float(rng.uniform(0.35, 0.55)),
+                           "confidence": float(rng.uniform(0.55, 0.78))},
+                    "3d": {"up_probability": float(rng.uniform(0.40, 0.70)),
+                           "down_probability": float(rng.uniform(0.30, 0.60)),
+                           "confidence": float(rng.uniform(0.50, 0.75))},
+                    "5d": {"up_probability": float(rng.uniform(0.40, 0.75)),
+                           "down_probability": float(rng.uniform(0.25, 0.60)),
+                           "confidence": float(rng.uniform(0.48, 0.72))},
                 },
-                "technical": {
-                    "RSI": float(rng.uniform(40, 65)),
-                    "MACD": float(rng.uniform(-3, 3)),
-                    "BB_position": float(rng.uniform(0.3, 0.7)),
-                    "ADX": float(rng.uniform(15, 35))
-                },
-                "source": "mock"
+                "source": "mock",
+            }
+            latest_technical = {
+                "RSI":       {"value": float(rng.uniform(40, 65)),  "signal": "中性"},
+                "MACD":      {"value": float(rng.uniform(-3, 3)),   "signal": "看跌"},
+                "Bollinger": {"value": float(rng.uniform(0.3, 0.7)),"signal": "中轨"},
+                "ADX":       {"value": float(rng.uniform(15, 35)),  "signal": "偏弱"},
             }
             logger.info("使用 mock 数据初始化 dashboard")
         except Exception as e:
@@ -260,15 +321,20 @@ def index():
 
 @app.route("/api/predict")
 def api_predict():
-    """获取最新预测"""
+    """获取最新预测（含标准化技术指标）"""
+    global latest_technical
     debug = _ensure_prediction()
-    return jsonify({
+    resp = {
         "status": "success",
         "price": latest_price,
         "prediction": latest_prediction,
+        "technical": latest_technical,
         "timestamp": datetime.now().isoformat(),
-        "_debug": debug  # 临时调试信息，上线后删除
-    })
+    }
+    # 仅在有错误时保留调试信息
+    if debug.get("errors"):
+        resp["_debug"] = debug
+    return jsonify(resp)
 
 
 @app.route("/api/price")
@@ -291,7 +357,6 @@ def api_price():
     except Exception as e:
         logger.warning(f"Yahoo 获取价格失败，回退到模拟数据: {e}")
 
-    # 回退: 模拟数据
     try:
         from data.mock_data import get_latest_mock_price
         price_data = get_latest_mock_price()
@@ -309,18 +374,17 @@ def api_price():
 
 @app.route("/api/technical")
 def api_technical():
-    """获取技术指标"""
-    global latest_prediction
-    tech = latest_prediction.get("technical", {})
-    return jsonify(tech)
+    """获取标准化技术指标（RSI / MACD / Bollinger / ADX）"""
+    global latest_technical
+    if not latest_technical:
+        _ensure_prediction()
+    return jsonify(latest_technical)
 
 
 @app.route("/api/history")
 def api_history():
     """获取历史预测记录"""
-    return jsonify({
-        "history": prediction_history[-100:]  # 最近100条
-    })
+    return jsonify({"history": prediction_history[-100:]})
 
 
 @app.route("/api/chart/price")
@@ -344,7 +408,6 @@ def api_chart_price():
             "highs": [float(h) for h in df['High'].values],
             "lows": [float(l) for l in df['Low'].values],
         }
-
         return jsonify(data)
 
     except Exception as e:
@@ -379,18 +442,13 @@ def api_chart_indicators():
         if df.empty:
             raise ValueError("Yahoo 返回空数据")
 
-        # 计算技术指标
         df['SMA20'] = df['Close'].rolling(20).mean()
         df['SMA60'] = df['Close'].rolling(60).mean()
-
-        # RSI
         delta = df['Close'].diff()
         gain = delta.where(delta > 0, 0).rolling(14).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
         rs = gain / loss
         df['RSI'] = 100 - (100 / (1 + rs))
-
-        # MACD
         ema12 = df['Close'].ewm(span=12, adjust=False).mean()
         ema26 = df['Close'].ewm(span=26, adjust=False).mean()
         df['MACD'] = ema12 - ema26
@@ -407,7 +465,6 @@ def api_chart_indicators():
             "signal": [float(s) if pd.notna(s) else None for s in df['Signal'].values],
             "histogram": [float(h) if pd.notna(h) else None for h in df['Histogram'].values],
         }
-
         return jsonify(data)
 
     except Exception as e:
@@ -420,7 +477,6 @@ def api_chart_indicators():
             df = generate_mock_gold_data(days=90)
             df = df.sort_values('date').reset_index(drop=True)
             close = df['close'].astype(float)
-
             sma20 = close.rolling(20).mean()
             sma60 = close.rolling(60).mean()
             delta = close.diff()
@@ -451,18 +507,14 @@ def api_chart_indicators():
 
 def update_prediction(prediction: Dict, price: float):
     """更新全局预测状态（供主程序调用）"""
-    global latest_prediction, latest_price, prediction_history
-    
+    global latest_prediction, latest_technical, latest_price, prediction_history
     latest_prediction = prediction
     latest_price = price
-    
     prediction_history.append({
         "timestamp": datetime.now().isoformat(),
         "price": price,
         "prediction": prediction
     })
-    
-    # 保持历史记录不超过1000条
     if len(prediction_history) > 1000:
         prediction_history = prediction_history[-1000:]
 
