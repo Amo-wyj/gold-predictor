@@ -11,6 +11,11 @@ import logging
 from datetime import datetime, timedelta
 from typing import Dict, Optional
 
+# 确保能导入项目根目录模块（Render 部署时工作目录在 dashboard/）
+_project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
+
 from flask import Flask, render_template, jsonify, request
 from flask_cors import CORS
 
