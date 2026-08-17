@@ -36,8 +36,28 @@ _prediction_lock = threading.Lock()
 _prediction_initialized = False
 
 
+# 技术指标英文信号 → 中文（idempotent：已是中文则原样返回）
+TECH_SIGNAL_ZH = {
+    'OVERSOLD': '超卖', 'OVERBOUGHT': '超买', 'NEUTRAL': '中性',
+    'BULLISH': '看涨', 'BEARISH': '看跌',
+    'AT_UPPER_BAND': '触及上轨', 'AT_LOWER_BAND': '触及下轨',
+    'STRONG_TREND': '强趋势', 'WEAK_TREND': '弱趋势', 'RANGING': '震荡',
+    '中轨': '中轨', '上轨': '上轨', '下轨': '下轨',
+    '强势': '强势', '偏弱': '偏弱', '看涨': '看涨', '看跌': '看跌',
+}
+
+
+def _translate_signal(sig):
+    """英文技术指标信号 → 中文"""
+    if not sig or not isinstance(sig, str):
+        return sig
+    return TECH_SIGNAL_ZH.get(sig, sig)
+
+
 def _normalize_technical(raw: dict) -> dict:
-    """统一技术指标格式：提取 RSI / MACD / Bollinger / ADX 数值与信号。"""
+    """统一技术指标格式：提取 RSI / MACD / Bollinger / ADX 数值与信号。
+    MACD value 已在上游归一化为占价百分比并钳制 [-10,10]，此处做防御性钳制。
+    """
     out = {}
     # RSI
     rsi = raw.get('rsi', raw.get('RSI'))
@@ -46,21 +66,21 @@ def _normalize_technical(raw: dict) -> dict:
         sig = rsi.get('signal', '中性')
         if isinstance(val, (int, float)):
             sig = '超买' if val > 70 else ('超卖' if val < 30 else '中性')
-        out['RSI'] = {'value': float(val), 'signal': sig}
+        out['RSI'] = {'value': float(val), 'signal': _translate_signal(sig)}
     elif isinstance(rsi, (int, float)):
         sig = '超买' if rsi > 70 else ('超卖' if rsi < 30 else '中性')
         out['RSI'] = {'value': float(rsi), 'signal': sig}
-    # MACD
+    # MACD（value 为占价百分比，钳制 -10~+10）
     macd = raw.get('macd', raw.get('MACD'))
     if isinstance(macd, dict):
         val = macd.get('value', macd.get('macd', 0))
         sig = macd.get('signal', '中性')
         if isinstance(val, (int, float)) and not sig:
             sig = '看涨' if val > 0 else '看跌'
-        out['MACD'] = {'value': float(val), 'signal': sig}
+        out['MACD'] = {'value': max(-10.0, min(10.0, float(val))), 'signal': _translate_signal(sig)}
     elif isinstance(macd, (int, float)):
         sig = '看涨' if macd > 0 else '看跌'
-        out['MACD'] = {'value': float(macd), 'signal': sig}
+        out['MACD'] = {'value': max(-10.0, min(10.0, float(macd))), 'signal': sig}
     # Bollinger Bands
     bb = raw.get('bollinger', raw.get('BB', raw.get('bollinger_bands')))
     if isinstance(bb, dict):
@@ -68,7 +88,7 @@ def _normalize_technical(raw: dict) -> dict:
         sig = bb.get('signal', '中性')
         if isinstance(pos, (int, float)) and not sig:
             sig = '上轨' if pos > 0.8 else ('下轨' if pos < 0.2 else '中轨')
-        out['Bollinger'] = {'value': float(pos), 'signal': sig}
+        out['Bollinger'] = {'value': float(pos), 'signal': _translate_signal(sig)}
     elif isinstance(bb, (int, float)):
         sig = '上轨' if bb > 0.8 else ('下轨' if bb < 0.2 else '中轨')
         out['Bollinger'] = {'value': float(bb), 'signal': sig}
@@ -79,7 +99,7 @@ def _normalize_technical(raw: dict) -> dict:
         sig = adx.get('signal', '偏弱')
         if isinstance(val, (int, float)) and not sig:
             sig = '强势' if val > 25 else '偏弱'
-        out['ADX'] = {'value': float(val), 'signal': sig}
+        out['ADX'] = {'value': float(val), 'signal': _translate_signal(sig)}
     elif isinstance(adx, (int, float)):
         sig = '强势' if adx > 25 else '偏弱'
         out['ADX'] = {'value': float(adx), 'signal': sig}
