@@ -1,0 +1,58 @@
+# Render.com Blueprint 配置
+# 用途：一键部署到 Render Cloud
+
+services:
+  # Web 服务 (Dashboard + API)
+  - type: web
+    name: gold-predictor-web
+    env: python
+    region: oregon
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python dashboard/dashboard.py
+    healthCheckPath: /
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: FRED_API_KEY
+        sync: false
+      - key: DATABASE_URL
+        fromDatabase:
+          name: gold-predictor-db
+          property: connectionString
+      - key: PYTHONUNBUFFERED
+        value: "1"
+
+  # 后台预测任务 (每6小时运行)
+  - type: cron
+    name: gold-predictor-cron
+    region: oregon
+    plan: free
+    schedule: "0 */6 * * *"
+    command: python main.py --mode predict
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: FRED_API_KEY
+        sync: false
+      - key: DATABASE_URL
+        fromDatabase:
+          name: gold-predictor-db
+          property: connectionString
+
+  # 每日摘要推送 (早晚两次)
+  - type: cron
+    name: gold-predictor-digest
+    region: oregon
+    plan: free
+    schedule: "0 8,20 * * *"
+    command: python main.py --mode digest
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+
+databases:
+  - name: gold-predictor-db
+    plan: free
+    databaseName: gold_predictor
+    ipAllowList: []
