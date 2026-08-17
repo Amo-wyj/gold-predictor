@@ -142,20 +142,39 @@
     </footer>
 
     <script>
+        // 信号中文映射
+        const SIGNAL_MAP = {
+            'STRONG_BUY':  { zh: '强力买入', cls: 'signal-strong-buy' },
+            'BUY':         { zh: '买入',     cls: 'signal-buy' },
+            'NEUTRAL':     { zh: '中性',     cls: 'signal-neutral' },
+            'SELL':        { zh: '卖出',     cls: 'signal-sell' },
+            'STRONG_SELL': { zh: '强力卖出', cls: 'signal-strong-sell' },
+        };
+        const CONFIDENCE_MAP = {
+            'HIGH':   '高',
+            'MEDIUM': '中',
+            'LOW':    '低',
+        };
+
         // 加载预测数据
         async function loadPrediction() {
             try {
                 const resp = await fetch('/api/predict');
                 const data = await resp.json();
-                
+
                 if (data.price) {
                     document.getElementById('current-price').textContent = '$' + data.price.toFixed(2);
                 }
-                
+
                 if (data.prediction) {
                     updatePredictionCards(data.prediction);
                 }
-                
+
+                // 技术指标也随 prediction 一起加载
+                if (data.technical) {
+                    renderTechnicalCards(data.technical);
+                }
+
                 document.getElementById('update-time').textContent = new Date().toLocaleString('zh-CN');
             } catch (e) {
                 console.error('加载预测失败:', e);
@@ -168,20 +187,25 @@
                 { key: 'horizon_3d', suffix: '3d' },
                 { key: 'horizon_5d', suffix: '5d' }
             ];
-            
+
             horizons.forEach(({ key, suffix }) => {
                 const p = prediction[key];
                 if (p) {
-                    // 信号
+                    // 信号 → 中文
+                    const rawSignal = p.signal || '--';
+                    const mapped = SIGNAL_MAP[rawSignal] || { zh: rawSignal, cls: 'signal-neutral' };
                     const signalEl = document.getElementById(`signal-${suffix}`);
-                    signalEl.textContent = p.signal || '--';
-                    signalEl.className = `text-2xl font-bold mb-2 ${getSignalClass(p.signal)}`;
-                    
+                    signalEl.textContent = mapped.zh;
+                    signalEl.className = `text-2xl font-bold mb-2 ${mapped.cls}`;
+
                     // 概率
                     document.getElementById(`prob-up-${suffix}`).textContent = (p.probability_up * 100).toFixed(1) + '%';
                     document.getElementById(`prob-down-${suffix}`).textContent = (p.probability_down * 100).toFixed(1) + '%';
-                    document.getElementById(`conf-${suffix}`).textContent = p.confidence_label || '--';
-                    
+
+                    // 置信度 → 中文
+                    const rawConf = p.confidence_label || '--';
+                    document.getElementById(`conf-${suffix}`).textContent = CONFIDENCE_MAP[rawConf] || rawConf;
+
                     // 卡片发光效果
                     const card = signalEl.closest('.card');
                     card.classList.remove('glow-green', 'glow-red');
@@ -191,13 +215,49 @@
             });
         }
 
-        function getSignalClass(signal) {
-            if (!signal) return 'text-slate-400';
-            if (signal.includes('STRONG_BUY')) return 'signal-strong-buy';
-            if (signal.includes('BUY')) return 'signal-buy';
-            if (signal.includes('STRONG_SELL')) return 'signal-strong-sell';
-            if (signal.includes('SELL')) return 'signal-sell';
-            return 'signal-neutral';
+        // 渲染技术指标卡片
+        function renderTechnicalCards(tech) {
+            // RSI
+            const rsi = tech.RSI || {};
+            const rsiValEl = document.getElementById('rsi-value');
+            const rsiSigEl = document.getElementById('rsi-signal');
+            if (rsi.value !== undefined) {
+                rsiValEl.textContent = rsi.value.toFixed(1);
+                rsiSigEl.textContent = rsi.signal || '--';
+                if (rsi.signal === '超买') { rsiSigEl.className = 'text-sm text-red-400'; }
+                else if (rsi.signal === '超卖') { rsiSigEl.className = 'text-sm text-green-400'; }
+                else { rsiSigEl.className = 'text-sm text-slate-400'; }
+            }
+
+            // MACD
+            const macd = tech.MACD || {};
+            const macdValEl = document.getElementById('macd-value');
+            const macdSigEl = document.getElementById('macd-signal');
+            if (macd.value !== undefined) {
+                macdValEl.textContent = macd.value.toFixed(2);
+                macdSigEl.textContent = macd.signal || '--';
+                if (macd.signal && macd.signal.includes('涨')) { macdSigEl.className = 'text-sm text-green-400'; }
+                else if (macd.signal && macd.signal.includes('跌')) { macdSigEl.className = 'text-sm text-red-400'; }
+                else { macdSigEl.className = 'text-sm text-slate-400'; }
+            }
+
+            // Bollinger
+            const bb = tech.Bollinger || {};
+            const bbValEl = document.getElementById('bb-value');
+            const bbSigEl = document.getElementById('bb-signal');
+            if (bb.value !== undefined) {
+                bbValEl.textContent = (bb.value * 100).toFixed(0) + '%';
+                bbSigEl.textContent = bb.signal || '--';
+            }
+
+            // ADX
+            const adx = tech.ADX || {};
+            const adxValEl = document.getElementById('adx-value');
+            const adxSigEl = document.getElementById('adx-signal');
+            if (adx.value !== undefined) {
+                adxValEl.textContent = adx.value.toFixed(1);
+                adxSigEl.textContent = adx.signal || '--';
+            }
         }
 
         // 加载价格图表
@@ -205,7 +265,7 @@
             try {
                 const resp = await fetch('/api/chart/price');
                 const data = await resp.json();
-                
+
                 if (data.dates) {
                     Plotly.newPlot('price-chart', [{
                         x: data.dates,
@@ -233,7 +293,7 @@
             try {
                 const resp = await fetch('/api/chart/indicators');
                 const data = await resp.json();
-                
+
                 if (data.dates) {
                     const traces = [
                         {
@@ -241,14 +301,14 @@
                             type: 'scatter', mode: 'lines', line: { color: '#a855f7', width: 1 }
                         }
                     ];
-                    
+
                     const layout = {
                         paper_bgcolor: 'transparent',
                         plot_bgcolor: 'transparent',
                         font: { color: '#94a3b8', size: 10 },
                         xaxis: { gridcolor: '#334155', showgrid: true },
-                        yaxis: { 
-                            gridcolor: '#334155', 
+                        yaxis: {
+                            gridcolor: '#334155',
                             domain: [0.6, 1],
                             range: [0, 100],
                             title: 'RSI'
@@ -261,7 +321,7 @@
                         margin: { t: 10, r: 10, b: 30, l: 50 },
                         legend: { orientation: 'h', y: 1.1 }
                     };
-                    
+
                     Plotly.newPlot('indicators-chart', traces, layout);
                 }
             } catch (e) {
@@ -274,11 +334,11 @@
             try {
                 const resp = await fetch('/api/price');
                 const data = await resp.json();
-                
+
                 if (data.price) {
                     const priceEl = document.getElementById('current-price');
                     priceEl.textContent = '$' + data.price.toFixed(2);
-                    
+
                     const changeEl = document.getElementById('price-change');
                     const change = data.change_pct;
                     changeEl.textContent = (change >= 0 ? '▲ ' : '▼ ') + change.toFixed(2) + '%';
@@ -291,17 +351,30 @@
 
         // 初始化
         document.addEventListener('DOMContentLoaded', () => {
-            loadPrediction();
+            loadTechnicalIndicators();
             loadPriceChart();
             loadIndicatorsChart();
             loadLivePrice();
-            
+            loadPrediction();
+
             // 每分钟刷新
             setInterval(() => {
                 loadLivePrice();
                 loadPrediction();
             }, 60000);
         });
+
+        // 加载技术指标详情（独立接口）
+        async function loadTechnicalIndicators() {
+            try {
+                const resp = await fetch('/api/technical');
+                if (!resp.ok) return;
+                const tech = await resp.json();
+                renderTechnicalCards(tech);
+            } catch (e) {
+                console.error('加载技术指标失败:', e);
+            }
+        }
     </script>
 </body>
 </html>
