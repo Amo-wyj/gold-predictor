@@ -82,17 +82,20 @@ class EnsemblePredictor:
         else:
             signals['rsi'] = {"value": rsi_14, "signal": "NEUTRAL", "weight": 0.1}
         
-        # MACD 分析
+        # MACD 分析（value 归一化为占价百分比，钳制 [-10,10]，避免异常 tick 放大）
         macd = df['macd'].iloc[-1]
         macd_signal = df['macd_signal'].iloc[-1]
         macd_hist = df['macd_hist'].iloc[-1]
+        close_now = df['close'].iloc[-1]
+        macd_pct = (macd / close_now * 100.0) if close_now else float(macd)
+        macd_display = float(np.clip(macd_pct, -10.0, 10.0))
         
         if macd > macd_signal and macd_hist > 0:
-            signals['macd'] = {"value": macd, "signal": "BULLISH", "weight": 0.25}
+            signals['macd'] = {"value": macd_display, "signal": "BULLISH", "weight": 0.25}
         elif macd < macd_signal and macd_hist < 0:
-            signals['macd'] = {"value": macd, "signal": "BEARISH", "weight": 0.25}
+            signals['macd'] = {"value": macd_display, "signal": "BEARISH", "weight": 0.25}
         else:
-            signals['macd'] = {"value": macd, "signal": "NEUTRAL", "weight": 0.1}
+            signals['macd'] = {"value": macd_display, "signal": "NEUTRAL", "weight": 0.1}
         
         # 布林带分析
         bb_pos = df['bb_position_20'].iloc[-1]
