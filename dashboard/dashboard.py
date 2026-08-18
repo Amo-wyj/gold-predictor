@@ -135,7 +135,7 @@ def _build_mock_prediction(price_seed: float = 0.0) -> Dict:
 
 def _ensure_prediction() -> dict:
     """保证 latest_prediction/latest_price/latest_technical 必有值；冷启动失败也能拼出 mock。"""
-    global latest_prediction, latest_technical, latest_price, _prediction_initialized
+    global latest_prediction, latest_technical, latest_price, _prediction_initialized, _latest_xgb_passes
     debug = {"steps": [], "errors": []}
 
     if _prediction_initialized and latest_prediction and latest_price is not None:
@@ -347,7 +347,7 @@ def index():
 @app.route("/api/predict")
 def api_predict():
     """获取最新预测（含标准化技术指标）"""
-    global latest_technical
+    global latest_technical, _latest_xgb_passes
     debug = _ensure_prediction()
     resp = {
         "status": "success",
