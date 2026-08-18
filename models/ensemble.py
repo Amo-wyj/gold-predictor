@@ -11,6 +11,7 @@ from datetime import datetime
 
 from models.arima_model import GoldARIMA
 from models.gbm_model import GoldGBM
+from models.xgboost_model import GoldXGBoost
 from features.feature_engineering import FeatureEngine
 
 logger = logging.getLogger(__name__)
@@ -20,9 +21,12 @@ class EnsemblePredictor:
     """集成预测器：融合多模型输出"""
     
     # 模型权重（可调）
+    # P1 变更：XGBoost 替换 GBM(GradientBoosting)，AUC > 0.65 才接入
+    # XGBoost 验证失败时自动降级回 GBM
     MODEL_WEIGHTS = {
         "arima": 0.25,
-        "gbm": 0.45,
+        "xgboost": 0.45,   # P1: XGBoost 原生概率替代 GBM 蒙特卡洛模拟
+        "gbm": 0.00,        # GBM 保留学名（仅作降级备选，不参与默认 ensemble）
         "technical": 0.20,
         "macro": 0.10,
     }
@@ -39,6 +43,8 @@ class EnsemblePredictor:
     def __init__(self):
         self.arima = GoldARIMA()
         self.gbm = GoldGBM()
+        self.xgboost_model: Optional[GoldXGBoost] = None  # P1: 延迟初始化
+        self.xgboost_passes_threshold = False              # P1: AUC 验证标记
         self.feature_engine = FeatureEngine()
         self.current_features = None
         self.current_price = None
@@ -211,9 +217,9 @@ class EnsemblePredictor:
         return signals
     
     def predict(self, prices: pd.Series) -> Dict:
-        """综合预测"""
+        """综合预测（包含 P1 XGBoost 集成）"""
         logger.info("[Ensemble] 开始综合预测...")
-        
+
         # 1. ARIMA 预测
         try:
             arima_results = {}
@@ -224,16 +230,70 @@ class EnsemblePredictor:
         except Exception as e:
             logger.warning(f"[Ensemble] ARIMA 预测失败: {e}")
             arima_results = {}
-        
-        # 2. GBM 预测（替代 LSTM，无需 TensorFlow）
-        gbm_results = {}
+
+        # 2. XGBoost 预测（P1 新增：延迟训练，优先使用）
+        xgb_results = {}
         if self.current_features is not None:
+            try:
+                self.xgboost_model = GoldXGBoost()
+                meta = self.xgboost_model.fit(self.current_features, prices=prices)
+                self.xgboost_passes_threshold = self.xgboost_model._passes_threshold
+                if self.xgboost_passes_threshold:
+                    xgb_results = self.xgboost_model.predict_direction_probability(
+                        self.current_features
+                    )
+                    aucs = [round(r['mean_auc'], 3) for r in meta.get('cv_results', {}).values()]
+                    logger.info(
+                        f"[Ensemble] XGBoost AUC 验证通过 {aucs}，接入 ensemble"
+                    )
+                else:
+                    aucs = {str(h) + 'd': round(r['mean_auc'], 3)
+                            for h, r in meta.get('cv_results', {}).items()}
+                    logger.warning(
+                        f"[Ensemble] XGBoost AUC 未达阈值 0.65，"
+                        f"不接入 ensemble，降级至 GBM: {aucs}"
+                    )
+            except ImportError as e:
+                logger.warning(f"[Ensemble] XGBoost 未安装: {e}，降级至 GBM")
+                self.xgboost_passes_threshold = False
+            except Exception as e:
+                logger.warning(f"[Ensemble] XGBoost 预测失败: {e}，降级至 GBM")
+                self.xgboost_passes_threshold = False
+
+        # 3. GBM 降级预测（XGBoost 验证失败时兜底）
+        gbm_results = {}
+        if not xgb_results and self.current_features is not None:
             try:
                 gbm = GoldGBM()
                 gbm.fit(self.current_features)
                 gbm_results = gbm.predict_direction_probability(self.current_features)
+                logger.info("[Ensemble] GBM 降级预测正常（XGBoost 不可用）")
             except Exception as e:
-                logger.warning(f"[Ensemble] GBM 预测失败: {e}")
+                logger.warning(f"[Ensemble] GBM 降级预测也失败: {e}")
+
+        # 4. 技术分析
+        tech_analysis = self.analyze_technical()
+
+        # 5. 集成输出（XGBoost 优先，GBM 降级兜底）
+        active_model = "xgb" if xgb_results else ("gbm" if gbm_results else None)
+        final_prediction = self._ensemble_output(
+            arima_results,
+            xgb_results if xgb_results else gbm_results,
+            tech_analysis,
+            active_model=active_model,
+        )
+
+        return {
+            "prediction": final_prediction,
+            "arima": arima_results,
+            "xgboost": xgb_results,
+            "gbm": gbm_results,
+            "technical_analysis": tech_analysis,
+            "macro_analysis": self.analyze_macro(),
+            "current_price": self.current_price,
+            "timestamp": datetime.now().isoformat(),
+            "_xgb_passes_threshold": self.xgboost_passes_threshold,  # P1 debug
+        }
 
         # 3. 技术分析
         tech_analysis = self.analyze_technical()
@@ -243,39 +303,38 @@ class EnsemblePredictor:
             arima_results, gbm_results, tech_analysis
         )
 
-        return {
-            "prediction": final_prediction,
-            "arima": arima_results,
-            "gbm": gbm_results,
-            "technical_analysis": tech_analysis,
-            "macro_analysis": self.analyze_macro(),
-            "current_price": self.current_price,
-            "timestamp": datetime.now().isoformat(),
-        }
+
     
-    def _ensemble_output(self, arima: Dict, gbm: Dict, technical: Dict) -> Dict:
-        """集成各模型输出"""
-        
+    def _ensemble_output(
+        self,
+        arima: Dict,
+        ml_model: Dict,  # XGBoost 或 GBM（统一接口）
+        technical: Dict,
+        active_model: str = "xgb",  # "xgb" | "gbm"
+    ) -> Dict:
+        """集成各模型输出（XGBoost 优先，GBM 降级兜底）"""
+
         horizons = [1, 3, 5]
         ensemble_results = {}
-        
+        ml_weight = self.MODEL_WEIGHTS["xgboost"] if active_model == "xgb" else self.MODEL_WEIGHTS["gbm"]
+
         for h in horizons:
             horizon_key = f"h{h}" if f"h{h}" in arima else f"horizon_{h}d"
-            
+
             # 收集各模型预测概率
             prob_up_list = []
             weights = []
-            
+
             # ARIMA
             if arima and horizon_key in arima:
                 prob_up_list.append(arima[horizon_key]['probability_up'])
                 weights.append(self.MODEL_WEIGHTS["arima"])
-            
-            # GBM
-            if gbm and f"horizon_{h}d" in gbm:
-                prob_up_list.append(gbm[f"horizon_{h}d"]['probability_up'])
-                weights.append(self.MODEL_WEIGHTS["gbm"])
-            
+
+            # XGBoost / GBM（统一入口）
+            if ml_model and f"horizon_{h}d" in ml_model:
+                prob_up_list.append(ml_model[f"horizon_{h}d"]['probability_up'])
+                weights.append(ml_weight)
+
             # 技术分析（规则引擎）
             if technical:
                 tech_score = technical.get('technical_score', 0)
