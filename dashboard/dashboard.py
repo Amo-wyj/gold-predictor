@@ -29,7 +29,9 @@ latest_prediction = {}
 latest_technical = {}  # 技术指标独立存储，供 /api/technical 使用
 latest_price = None
 prediction_history = []
-_latest_xgb_passes: bool = False   # P1: XGBoost AUC 验证标记（白名单方案是否生效）
+_latest_xgb_passes: bool = False   # P1: ML AUC 验证标记（白名单方案是否生效）
+_latest_ml_auc: Dict = {}          # P1: 各 horizon CV AUC（LightGBM/XGBoost）
+_latest_ml_model: str = "XGBoost"  # P1: 实际 ML 模型名
 
 import threading
 
@@ -135,7 +137,7 @@ def _build_mock_prediction(price_seed: float = 0.0) -> Dict:
 
 def _ensure_prediction() -> dict:
     """保证 latest_prediction/latest_price/latest_technical 必有值；冷启动失败也能拼出 mock。"""
-    global latest_prediction, latest_technical, latest_price, _prediction_initialized, _latest_xgb_passes
+    global latest_prediction, latest_technical, latest_price, _prediction_initialized, _latest_xgb_passes, _latest_ml_auc, _latest_ml_model
     debug = {"steps": [], "errors": []}
 
     if _prediction_initialized and latest_prediction and latest_price is not None:
@@ -283,7 +285,9 @@ def init_dashboard():
                 # P1 Fix: 保存 XGBoost AUC 验证结果（白名单方案）
                 global _latest_xgb_passes
                 _latest_xgb_passes = prediction_result.get("_xgb_passes_threshold", False)
-                logger.info(f"[P1] XGBoost 白名单 AUC 验证: {_latest_xgb_passes}")
+                _latest_ml_auc = prediction_result.get("_ml_cv_auc", {})
+                _latest_ml_model = prediction_result.get("_ml_model", "XGBoost")
+                logger.info(f"[P1] {_latest_ml_model} AUC 验证: {_latest_xgb_passes} | CV AUC: {_latest_ml_auc}")
                 # 写入 output 文件
                 try:
                     os.makedirs(output_dir, exist_ok=True)
@@ -347,7 +351,7 @@ def index():
 @app.route("/api/predict")
 def api_predict():
     """获取最新预测（含标准化技术指标）"""
-    global latest_technical, _latest_xgb_passes
+    global latest_technical, _latest_xgb_passes, _latest_ml_auc, _latest_ml_model
     debug = _ensure_prediction()
     resp = {
         "status": "success",
@@ -355,7 +359,9 @@ def api_predict():
         "prediction": latest_prediction,
         "technical": latest_technical,
         "timestamp": datetime.now().isoformat(),
-        "_xgb_passes_threshold": _latest_xgb_passes,   # P1: 白名单XGBoost是否通过AUC验证
+        "_xgb_passes_threshold": _latest_xgb_passes,   # P1: ML是否通过AUC验证
+        "_ml_model": _latest_ml_model,                  # P1: 实际ML模型（LightGBM/XGBoost）
+        "_ml_cv_auc": _latest_ml_auc,                   # P1: 各horizon CV AUC
     }
     # 仅在有错误时保留调试信息
     if debug.get("errors"):
