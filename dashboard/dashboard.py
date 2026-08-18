@@ -546,6 +546,240 @@ def run_server(host: str = "0.0.0.0", port: int = 5000):
     app.run(host=host, port=port, debug=False)
 
 
+@app.route("/api/debug/features")
+def api_debug_features():
+    """
+    🎯 特征选择分析端点
+    返回 Top 20 核心特征 + 完整排名
+    用途：①特征选择阶段，识别130个指标中哪些真正有用
+    访问：GET https://gold-predictor-wu2p.onrender.com/api/debug/features
+    """
+    import yfinance as yf
+    import numpy as np
+    import pandas as pd
+
+    try:
+        import xgboost as xgb
+        HAS_XGB = True
+    except ImportError:
+        HAS_XGB = False
+
+    try:
+        # ── 1. 获取数据 ──────────────────────────────────────────
+        gold = yf.Ticker("GC=F").history(period="2y", auto_adjust=True)
+        gold.index = pd.to_datetime(gold.index).tz_localize(None)
+
+        if len(gold) < 200:
+            return jsonify({"error": f"数据不足: {len(gold)} 天"}), 400
+
+        close = gold["close"]
+        high = gold["high"]
+        low = gold["low"]
+        volume = gold["volume"]
+
+        # ── 2. 构建特征（与 feature_engineering.py 完全一致）──────
+        features = {}
+
+        # 移动平均线
+        for p in [5, 10, 20, 60, 120, 200]:
+            features[f"sma_{p}"] = close.rolling(p).mean()
+            features[f"ema_{p}"] = close.ewm(span=p, adjust=False).mean()
+
+        # RSI
+        for p in [7, 14, 21]:
+            delta = close.diff()
+            gain = delta.where(delta > 0, 0).rolling(p).mean()
+            loss = (-delta.where(delta < 0, 0)).rolling(p).mean()
+            rs = gain / (loss + 1e-10)
+            features[f"rsi_{p}"] = 100 - (100 / (1 + rs))
+
+        # MACD
+        ema12 = close.ewm(span=12, adjust=False).mean()
+        ema26 = close.ewm(span=26, adjust=False).mean()
+        macd_line = ema12 - ema26
+        features["macd"] = macd_line
+        features["macd_signal"] = macd_line.ewm(span=9, adjust=False).mean()
+        features["macd_hist"] = macd_line - macd_line.ewm(span=9, adjust=False).mean()
+
+        # KDJ
+        low14 = low.rolling(14).min()
+        high14 = high.rolling(14).max()
+        rsv = 100 * (close - low14) / (high14 - low14 + 1e-10)
+        features["kdj_k"] = rsv.ewm(com=2, adjust=False).mean()
+        features["kdj_d"] = features["kdj_k"].ewm(com=2, adjust=False).mean()
+        features["kdj_j"] = 3 * features["kdj_k"] - 2 * features["kdj_d"]
+
+        # ATR
+        tr1 = high - low
+        tr2 = np.abs(high - close.shift())
+        tr3 = np.abs(low - close.shift())
+        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+        features["atr_14"] = tr.rolling(14).mean()
+        features["atr_28"] = tr.rolling(28).mean()
+
+        # 布林带
+        for p in [20, 60]:
+            sma = close.rolling(p).mean()
+            std = close.rolling(p).std()
+            upper = sma + 2 * std
+            lower = sma - 2 * std
+            features[f"bb_width_{p}"] = (upper - lower) / (sma + 1e-10)
+            features[f"bb_position_{p}"] = (close - lower) / (upper - lower + 1e-10)
+
+        # ADX
+        for p in [14, 28]:
+            plus_dm = high.diff()
+            minus_dm = -low.diff()
+            plus_dm[plus_dm < 0] = 0
+            minus_dm[minus_dm < 0] = 0
+            tr_p = features["atr_14"] if p == 14 else features["atr_28"]
+            plus_di = 100 * plus_dm.rolling(p).mean() / (tr_p + 1e-10)
+            minus_di = 100 * minus_dm.rolling(p).mean() / (tr_p + 1e-10)
+            dx = 100 * np.abs(plus_di - minus_di) / (plus_di + minus_di + 1e-10)
+            features[f"adx_{p}"] = dx.rolling(p).mean()
+            features[f"plus_di_{p}"] = plus_di
+            features[f"minus_di_{p}"] = minus_di
+
+        # 成交量
+        features["volume_sma_20"] = volume.rolling(20).mean()
+        features["volume_ratio"] = volume / (features["volume_sma_20"] + 1)
+        obv = [0]
+        for i in range(1, len(close)):
+            if close.iloc[i] > close.iloc[i-1]:
+                obv.append(obv[-1] + volume.iloc[i])
+            elif close.iloc[i] < close.iloc[i-1]:
+                obv.append(obv[-1] - volume.iloc[i])
+            else:
+                obv.append(obv[-1])
+        features["obv"] = pd.Series(obv, index=close.index)
+        features["obv_sma_10"] = features["obv"].rolling(10).mean()
+
+        # 收益率
+        for p in [1, 2, 3, 5, 10, 20]:
+            features[f"return_{p}d"] = close.pct_change(p)
+            features[f"volatility_{p}d"] = close.pct_change().rolling(p).std()
+
+        # 黄金特有
+        for p in [20, 60]:
+            features[f"high_{p}d"] = high.rolling(p).max()
+            features[f"low_{p}d"] = low.rolling(p).min()
+            features[f"position_in_range_{p}d"] = (close - features[f"low_{p}d"]) / (
+                features[f"high_{p}d"] - features[f"low_{p}d"] + 1e-10)
+
+        features["intraday_range"] = (high - low) / (close + 1e-10)
+        features["close_position"] = (close - low) / (high - low + 1e-10)
+
+        # 跨资产
+        cross_ok = False
+        for name, sym in [("vix", "^VIX"), ("dxy", "UUP"), ("tlt", "TLT"), ("spy", "SPY")]:
+            try:
+                ex = yf.Ticker(sym).history(start=gold.index[0], end=gold.index[-1], auto_adjust=True)
+                ex.index = pd.to_datetime(ex.index).tz_localize(None)
+                ex_c = ex["Close"].reindex(gold.index).ffill()
+                features[f"corr_{name}_close"] = close.rolling(20).corr(ex_c)
+                features[f"corr_{name}_return"] = close.pct_change().rolling(10).corr(ex_c.pct_change())
+                cross_ok = True
+            except Exception:
+                pass
+
+        feat_df = pd.DataFrame(features, index=gold.index)
+        feat_df["close"] = close
+        feat_df = feat_df.replace([np.inf, -np.inf], np.nan).ffill().fillna(0)
+
+        # 特征列
+        exclude = {"close", "volume", "open", "high", "low"}
+        feature_cols = [c for c in feat_df.columns if c.lower() not in exclude]
+        n_features = len(feature_cols)
+
+        if n_features < 10:
+            return jsonify({"error": "特征数不足"}), 400
+
+        # ── 3. 打分：相关性轨道 ─────────────────────────────────
+        horizons = [1, 3, 5]
+        scores = {col: 0.0 for col in feature_cols}
+
+        for h in horizons:
+            future_ret = close.shift(-h) / close - 1
+            direction = (future_ret > 0).astype(int)
+            for col in feature_cols:
+                corr = feat_df[col].corr(direction)
+                if not np.isnan(corr):
+                    scores[col] += abs(corr) / len(horizons)
+
+        # ── 4. 打分：XGBoost permutation importance（如果可用）──
+        base_auc = None
+        if HAS_XGB:
+            try:
+                X_raw = feat_df[feature_cols].values
+                X_raw = np.nan_to_num(X_raw, nan=0.0, posinf=0.0, neginf=0.0)
+                std = np.std(X_raw, axis=0)
+                std[std == 0] = 1.0
+                X_scaled = (X_raw - np.mean(X_raw, axis=0)) / std
+
+                future_ret = close.shift(-3) / close - 1
+                labels = (future_ret > 0).astype(int).values
+                valid = ~np.isnan(future_ret.values)
+                X_v, y_v = X_scaled[valid], labels[valid]
+                split = int(len(X_v) * 0.8)
+                X_tr, X_va = X_v[:split], X_v[split:]
+                y_tr, y_va = y_v[:split], y_v[split:]
+
+                from sklearn.metrics import roc_auc_score
+                model = xgb.XGBClassifier(
+                    n_estimators=200, max_depth=4, learning_rate=0.05,
+                    subsample=0.8, colsample_bytree=0.8,
+                    random_state=42, n_jobs=-1, verbosity=0, use_label_encoder=False,
+                )
+                model.fit(X_tr, y_tr)
+                va_proba = model.predict_proba(X_va)[:, 1]
+                base_auc = roc_auc_score(y_va, va_proba)
+
+                # permutation importance
+                for i, col in enumerate(feature_cols):
+                    X_perm = X_va.copy()
+                    np.random.seed(i)
+                    X_perm[:, i] = X_perm[np.random.permutation(len(X_perm)), i]
+                    perm_auc = roc_auc_score(y_va, model.predict_proba(X_perm)[:, 1])
+                    drop = max(0.0, base_auc - perm_auc)
+                    scores[col] += (drop / 2.0)
+
+            except Exception as e_xgb:
+                logger.warning(f"XGBoost 打分失败: {e_xgb}")
+
+        # ── 5. 归一化并排序 ──────────────────────────────────────
+        max_s = max(scores.values()) if max(scores.values()) > 0 else 1
+        ranked = sorted([(col, scores[col] / max_s) for col in feature_cols],
+                        key=lambda x: x[1], reverse=True)
+
+        top20 = ranked[:20]
+
+        # ── 6. 分层建议 ──────────────────────────────────────────
+        tier1 = [(c, s) for c, s in ranked[:8] if s >= 0.4]
+        tier2 = [(c, s) for c, s in ranked[8:15] if s >= 0.25]
+        tier3 = [(c, s) for c, s in ranked[15:25]]
+
+        return jsonify({
+            "status": "ok",
+            "n_total_features": n_features,
+            "n_samples": len(gold),
+            "xgb_available": HAS_XGB,
+            "base_auc_3d": round(base_auc, 4) if base_auc else None,
+            "top20": [{"rank": i+1, "feature": c, "score": round(s, 4)} for i, (c, s) in enumerate(top20)],
+            "tier1_required": [{"rank": i+1, "feature": c, "score": round(s, 4)} for i, (c, s) in enumerate(tier1)],
+            "tier2_optional": [{"rank": 9+i, "feature": c, "score": round(s, 4)} for i, (c, s) in enumerate(tier2)],
+            "tier3_experimental": [{"rank": 16+i, "feature": c, "score": round(s, 4)} for i, (c, s) in enumerate(tier3)],
+            "recommendation": {
+                "whitelist": [c for c, _ in tier1] + [c for c, _ in tier2[:4]],
+                "description": f"Tier-1({len(tier1)}) 必须保留 + Tier-2({min(len(tier2),4)}) 建议保留 = 共{len(tier1)+min(len(tier2),4)}个特征"
+            },
+            "generated_at": datetime.now().isoformat(),
+        })
+
+    except Exception as e:
+        import traceback
+        return jsonify({"error": str(e), "trace": traceback.format_exc()[-500:]}), 500
+
+
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     run_server()
