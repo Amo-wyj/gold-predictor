@@ -235,55 +235,6 @@ def _ensure_prediction() -> dict:
         return debug
 
 
-def _start_background_predict():
-    """后台线程：实时预测 + 训练 ML 模型（不阻塞启动，避免 Render 启动超时）"""
-    global latest_prediction, latest_price, latest_technical
-    global _latest_xgb_passes, _latest_ml_auc, _latest_ml_model
-    try:
-        import runpy
-        from pathlib import Path
-        project_root = Path(__file__).resolve().parent.parent
-        spec = runpy.run_path(str(project_root / "run_predict.py"), run_name="__predict_mod")
-        result = spec.get("predict")
-        if result is None:
-            raise RuntimeError("run_predict.predict 函数未找到")
-
-        prediction_result = None
-        try:
-            prediction_result = result(use_mock=False)
-        except Exception as e_real:
-            logger.warning(f"真实数据预测失败，回退 mock: {e_real}")
-            prediction_result = result(use_mock=True)
-
-        if prediction_result and "prediction" in prediction_result:
-            latest_prediction = prediction_result["prediction"]
-            raw_tech = prediction_result.get("technical_analysis", {})
-            latest_technical = _normalize_technical(raw_tech)
-            latest_price = float(prediction_result.get("current_price", 0) or 0)
-            logger.info(f"云端预测完成，技术指标: {list(latest_technical.keys())}")
-            global _latest_xgb_passes, _latest_ml_auc, _latest_ml_model
-            _latest_xgb_passes = prediction_result.get("_xgb_passes_threshold", False)
-            _latest_ml_auc = prediction_result.get("_ml_cv_auc", {})
-            _latest_ml_model = prediction_result.get("_ml_model", "XGBoost")
-            logger.info(f"[P1] 后台训练 {_latest_ml_model} AUC 验证: {_latest_xgb_passes} | CV AUC: {_latest_ml_auc}")
-            try:
-                output_dir = str(project_root / "output")
-                os.makedirs(output_dir, exist_ok=True)
-                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-                with open(f"{output_dir}/prediction_{ts}.json", "w") as f:
-                    json.dump({
-                        "timestamp": datetime.now().isoformat(),
-                        "current_price": latest_price,
-                        "prediction": latest_prediction,
-                        "technical_analysis": raw_tech,
-                    }, f, indent=2, default=str)
-                logger.info(f"预测文件已写入 {ts}.json")
-            except Exception as e_write:
-                logger.warning(f"写入 prediction 文件失败: {e_write}")
-    except Exception as e:
-        logger.warning(f"后台训练失败: {e}")
-
-
 def init_dashboard():
     """初始化 Dashboard"""
     global latest_prediction, latest_technical, latest_price
@@ -307,11 +258,8 @@ def init_dashboard():
             except Exception as e:
                 logger.warning(f"加载预测文件失败: {e}")
 
-    # 2) 后台线程训练 ML（不阻塞启动，避免 Render 启动超时 502）
-    threading.Thread(target=_start_background_predict, daemon=True).start()
-
-    # 2b) 原实时预测逻辑（已移至后台线程，此处保留作为同步兜底参考）
-    if False:  # 禁用同步实时预测（改为后台）
+    # 2) 云端 / Render 部署：跑一次实时预测
+    if not loaded_from_file or not latest_prediction:
         try:
             import runpy
             from pathlib import Path
@@ -355,7 +303,7 @@ def init_dashboard():
                 except Exception as e_write:
                     logger.warning(f"写入 prediction 文件失败: {e_write}")
         except Exception as e:
-            logger.warning(f"云端自启预测失败，保留文件兜底（不 mock）: {e}")
+            logger.warning(f"云端自启预测失败，使用 mock 兜底: {e}")
 
     # 3) 兜底：如果仍然没有数据，用 mock
     if not latest_prediction or latest_price is None:
