@@ -123,10 +123,23 @@ class GoldXGBoost:
         except ImportError:
             raise ImportError("需要 xgboost: pip install xgboost")
 
-        # 特征列
-        self.feature_cols = self._get_feature_cols(features_df)
-        if not self.feature_cols:
+        # 特征列：优先使用白名单（12核的特征），没有则用全部
+        all_cols = self._get_feature_cols(features_df)
+        if not all_cols:
             raise ValueError("特征列为空，请检查 FeatureEngine 输出")
+
+        # 白名单过滤（130 → 12）
+        try:
+            from config import FEATURE_WHITELIST
+            self.feature_cols = [c for c in FEATURE_WHITELIST if c in all_cols]
+            if len(self.feature_cols) >= 5:
+                logger.info(f"[XGBoost] 使用特征白名单 {len(self.feature_cols)} 个（降噪后）: {self.feature_cols}")
+            else:
+                self.feature_cols = all_cols
+                logger.info(f"[XGBoost] 白名单未生效，回退全部 {len(all_cols)} 个特征")
+        except Exception:
+            self.feature_cols = all_cols
+            logger.info(f"[XGBoost] 回退全部 {len(all_cols)} 个特征（config 未定义）")
 
         # 价格序列（用于构建标签）
         if prices is None:
