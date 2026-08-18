@@ -572,10 +572,10 @@ def api_debug_features():
         if len(gold) < 200:
             return jsonify({"error": f"数据不足: {len(gold)} 天"}), 400
 
-        close = gold["close"]
-        high = gold["high"]
-        low = gold["low"]
-        volume = gold["volume"]
+        close = gold["Close"]
+        high = gold["High"]
+        low = gold["Low"]
+        volume = gold["Volume"]
 
         # ── 2. 构建特征（与 feature_engineering.py 完全一致）──────
         features = {}
