@@ -734,6 +734,65 @@ def api_debug_features():
                 va_proba = model.predict_proba(X_va)[:, 1]
                 base_auc = roc_auc_score(y_va, va_proba)
 
+                # ── 白名单对比实验：直接用 all-col 训练数据切片 ─────
+                whitelist_auc_3d = None
+                whitelist_auc_1d = None
+                try:
+                    from config import FEATURE_WHITELIST
+                    wl_cols = [c for c in FEATURE_WHITELIST if c in feature_cols]
+                    logger.info(f"[FeatureExp] 白名单命中 {len(wl_cols)}/{len(FEATURE_WHITELIST)} 个: {wl_cols}")
+                    if len(wl_cols) < 5:
+                        logger.warning("[FeatureExp] 白名单列不足5个，跳过")
+                    else:
+                        # feat_df 中有 "close" 列吗？没有就用 outer scope 的 close Series
+                        price_series = feat_df["close"] if "close" in feat_df.columns else close
+                        logger.info(f"[FeatureExp] feat_df shape: {feat_df.shape}, close type: {type(price_series).__name__}")
+                        # 3天标签
+                        future_ret_3d = price_series.shift(-3) / price_series - 1
+                        labels_3d = (future_ret_3d > 0).astype(int).values
+                        valid_3d = ~np.isnan(future_ret_3d.values)
+                        logger.info(f"[FeatureExp] 3d标签 有效: {valid_3d.sum()}/{len(valid_3d)}, split={split}")
+                        # 白名单特征
+                        X_wl = feat_df[wl_cols].values[valid_3d]
+                        y_wl = labels_3d[valid_3d]
+                        X_wl = np.nan_to_num(X_wl, nan=0.0, posinf=0.0, neginf=0.0)
+                        X_wl_split = int(len(X_wl) * 0.8)
+                        std_wl = np.std(X_wl, axis=0)
+                        std_wl[std_wl == 0] = 1.0
+                        X_wl_scaled = (X_wl - np.mean(X_wl, axis=0)) / std_wl
+                        model_wl = xgb.XGBClassifier(
+                            n_estimators=200, max_depth=4, learning_rate=0.05,
+                            subsample=0.8, colsample_bytree=0.8,
+                            random_state=42, n_jobs=-1, verbosity=0,
+                        )
+                        model_wl.fit(X_wl_scaled[:X_wl_split], y_wl[:X_wl_split])
+                        wl_proba_3d = model_wl.predict_proba(X_wl_scaled[X_wl_split:])[:, 1]
+                        whitelist_auc_3d = roc_auc_score(y_wl[X_wl_split:], wl_proba_3d)
+                        # 1天标签
+                        future_ret_1d = price_series.shift(-1) / price_series - 1
+                        labels_1d = (future_ret_1d > 0).astype(int).values
+                        valid_1d = ~np.isnan(future_ret_1d.values)
+                        X_wl_1d = feat_df[wl_cols].values[valid_1d]
+                        y_wl_1d = labels_1d[valid_1d]
+                        X_wl_1d = np.nan_to_num(X_wl_1d, nan=0.0, posinf=0.0, neginf=0.0)
+                        X_wl_1d_split = int(len(X_wl_1d) * 0.8)
+                        std_wl_1d = np.std(X_wl_1d, axis=0)
+                        std_wl_1d[std_wl_1d == 0] = 1.0
+                        X_wl_1d_scaled = (X_wl_1d - np.mean(X_wl_1d, axis=0)) / std_wl_1d
+                        model_wl_1d = xgb.XGBClassifier(
+                            n_estimators=200, max_depth=4, learning_rate=0.05,
+                            subsample=0.8, colsample_bytree=0.8,
+                            random_state=42, n_jobs=-1, verbosity=0,
+                        )
+                        model_wl_1d.fit(X_wl_1d_scaled[:X_wl_1d_split], y_wl_1d[:X_wl_1d_split])
+                        wl_proba_1d = model_wl_1d.predict_proba(X_wl_1d_scaled[X_wl_1d_split:])[:, 1]
+                        whitelist_auc_1d = roc_auc_score(y_wl_1d[X_wl_1d_split:], wl_proba_1d)
+                        logger.info(f"[FeatureExp] 白名单AUC 3d={whitelist_auc_3d:.4f} 1d={whitelist_auc_1d:.4f} vs 全特征AUC 3d={base_auc:.4f}")
+                except Exception as e_wl:
+                    import traceback as _tb
+                    logger.warning(f"[FeatureExp] 白名单对比失败: {e_wl}")
+                    logger.warning(f"[FeatureExp] TRACE: {_tb.format_exc()[-400:]}")
+
                 # permutation importance
                 for i, col in enumerate(feature_cols):
                     X_perm = X_va.copy()
@@ -764,6 +823,15 @@ def api_debug_features():
             "n_samples": len(gold),
             "xgb_available": HAS_XGB,
             "base_auc_3d": round(base_auc, 4) if base_auc else None,
+            "whitelist_auc_3d": round(whitelist_auc_3d, 4) if whitelist_auc_3d else None,
+            "whitelist_auc_1d": round(whitelist_auc_1d, 4) if whitelist_auc_1d else None,
+            "auc_comparison": {
+                "all_features_auc_3d": round(base_auc, 4) if base_auc else None,
+                "whitelist_auc_3d": round(whitelist_auc_3d, 4) if whitelist_auc_3d else None,
+                "whitelist_auc_1d": round(whitelist_auc_1d, 4) if whitelist_auc_1d else None,
+                "improvement": round((whitelist_auc_3d - base_auc) * 100, 1) if (whitelist_auc_3d and base_auc) else None,
+                "verdict": "白名单胜出 ✅" if (whitelist_auc_3d and base_auc and whitelist_auc_3d > base_auc) else ("全特征胜出 ⚠️" if (whitelist_auc_3d and base_auc) else "待验证")
+            },
             "top20": [{"rank": i+1, "feature": c, "score": round(s, 4)} for i, (c, s) in enumerate(top20)],
             "tier1_required": [{"rank": i+1, "feature": c, "score": round(s, 4)} for i, (c, s) in enumerate(tier1)],
             "tier2_optional": [{"rank": 9+i, "feature": c, "score": round(s, 4)} for i, (c, s) in enumerate(tier2)],
