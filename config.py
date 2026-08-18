@@ -129,3 +129,30 @@ LOGGING = {
     "format": "%(asctime)s | %(levelname)-8s | %(message)s",
     "file": f"{BASE_DIR}/logs/gold_predictor.log",
 }
+
+# === 特征白名单（来自特征选择分析，130→12）===
+# Top 12 核心特征（2026-08-18 分析结果）
+# 覆盖：EMA均线族(6个) + ADX空头力度 + ATR波动率 + OBV量能 + SMA均线族(3个)
+FEATURE_WHITELIST = [
+    "ema_200",      # #1 长期趋势
+    "ema_120",      # #2
+    "ema_60",       # #3
+    "ema_5",        # #4 短期动量
+    "ema_20",       # #5
+    "ema_10",       # #6
+    "minus_di_28",  # #7 ADX空头力度
+    "atr_28",       # #8 波动率
+    "sma_5",        # #9
+    "obv_sma_10",  # #10 量能
+    "sma_120",     # #11
+    "sma_20",       # #12
+]
+
+# 跨资产特征（额外增强，与 whitelist 配合使用）
+CROSS_ASSET_SYMBOLS = {
+    "vix": "^VIX",     # VIX 恐慌指数
+    "dxy": "UUP",       # 美元指数 ETF
+    "tlt": "TLT",       # 20年美债 ETF
+    "spy": "SPY",       # 标普 500 ETF
+}
+
