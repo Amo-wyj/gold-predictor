@@ -10,7 +10,7 @@ yfinance>=0.2.0
 # 机器学习
 scikit-learn>=1.0.0
 xgboost>=2.0.0
-lightgbm>=4.0.0   # P1: LightGBM 替代 XGBoost（同接口，更快更鲁棒）
+# lightgbm>=4.0.0   # Render Free 安装失败（build超时），暂回退XGBoost
 
 # 时间序列
 statsmodels>=0.13.0
