@@ -258,8 +258,9 @@ def init_dashboard():
             except Exception as e:
                 logger.warning(f"加载预测文件失败: {e}")
 
-    # 2) 云端 / Render 部署：跑一次实时预测
-    if not loaded_from_file or not latest_prediction:
+    # 2) 云端 / Render 部署：跑一次实时预测（强制跑，训练 ML 模型；失败用文件兜底）
+    # 注意：必须跑实时预测，否则 current_features 为 None，XGBoost/LightGBM 整块被跳过
+    if True:  # 强制实时预测（训练 ML）
         try:
             import runpy
             from pathlib import Path
@@ -303,7 +304,7 @@ def init_dashboard():
                 except Exception as e_write:
                     logger.warning(f"写入 prediction 文件失败: {e_write}")
         except Exception as e:
-            logger.warning(f"云端自启预测失败，使用 mock 兜底: {e}")
+            logger.warning(f"云端自启预测失败，保留文件兜底（不 mock）: {e}")
 
     # 3) 兜底：如果仍然没有数据，用 mock
     if not latest_prediction or latest_price is None:
