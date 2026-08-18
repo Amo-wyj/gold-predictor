@@ -11,7 +11,7 @@ from datetime import datetime
 
 from models.arima_model import GoldARIMA
 from models.gbm_model import GoldGBM
-from models.lightgbm_model import GoldLightGBM
+from models.xgboost_model import GoldXGBoost
 from features.feature_engineering import FeatureEngine
 
 logger = logging.getLogger(__name__)
@@ -235,7 +235,7 @@ class EnsemblePredictor:
         xgb_results = {}
         if self.current_features is not None:
             try:
-                self.xgboost_model = GoldLightGBM()  # P1: LightGBM 替代 XGBoost（同接口）
+                self.xgboost_model = GoldXGBoost()  # P1: XGBoost（LightGBM在Render Free安装失败，回退）
                 meta = self.xgboost_model.fit(self.current_features, prices=prices)
                 self.xgboost_passes_threshold = self.xgboost_model._passes_threshold
                 if self.xgboost_passes_threshold:
@@ -244,20 +244,20 @@ class EnsemblePredictor:
                     )
                     aucs = [round(r['mean_auc'], 3) for r in meta.get('cv_results', {}).values()]
                     logger.info(
-                        f"[Ensemble] LightGBM AUC 验证通过 {aucs}，接入 ensemble"
+                        f"[Ensemble] XGBoost AUC 验证通过 {aucs}，接入 ensemble"
                     )
                 else:
                     aucs = {str(h) + 'd': round(r['mean_auc'], 3)
                             for h, r in meta.get('cv_results', {}).items()}
                     logger.warning(
-                        f"[Ensemble] LightGBM AUC 未达阈值 0.65，"
+                        f"[Ensemble] XGBoost AUC 未达阈值 0.65，"
                         f"不接入 ensemble，降级至 GBM: {aucs}"
                     )
             except ImportError as e:
-                logger.warning(f"[Ensemble] LightGBM 未安装: {e}，降级至 GBM")
+                logger.warning(f"[Ensemble] XGBoost 未安装: {e}，降级至 GBM")
                 self.xgboost_passes_threshold = False
             except Exception as e:
-                logger.warning(f"[Ensemble] LightGBM 预测失败: {e}，降级至 GBM")
+                logger.warning(f"[Ensemble] XGBoost 预测失败: {e}，降级至 GBM")
                 self.xgboost_passes_threshold = False
 
         # 3. GBM 降级预测（XGBoost 验证失败时兜底）
