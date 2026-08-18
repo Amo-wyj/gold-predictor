@@ -9,13 +9,14 @@ yfinance>=0.2.0
 
 # 机器学习
 scikit-learn>=1.0.0
+xgboost>=2.0.0
 
 # 时间序列
 statsmodels>=0.13.0
 pmdarima>=1.8.0  # ARIMA 自动参数优化
 
-# 深度学习
-tensorflow>=2.10.0
+# 深度学习（可选，LSTM实验用）
+# tensorflow>=2.10.0  # 注释掉，XGBoost 已替代 LSTM/GBM 需求
 # tensorflow-metal  # Mac M1/M2 GPU 加速（可选）
 # tensorflow-cpu  # 无GPU时使用CPU版本
 
