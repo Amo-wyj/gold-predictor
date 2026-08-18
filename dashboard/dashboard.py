@@ -29,6 +29,7 @@ latest_prediction = {}
 latest_technical = {}  # 技术指标独立存储，供 /api/technical 使用
 latest_price = None
 prediction_history = []
+_latest_xgb_passes: bool = False   # P1: XGBoost AUC 验证标记（白名单方案是否生效）
 
 import threading
 
@@ -279,6 +280,10 @@ def init_dashboard():
                 latest_technical = _normalize_technical(raw_tech)
                 latest_price = float(prediction_result.get("current_price", 0) or 0)
                 logger.info(f"云端预测完成，技术指标: {list(latest_technical.keys())}")
+                # P1 Fix: 保存 XGBoost AUC 验证结果（白名单方案）
+                global _latest_xgb_passes
+                _latest_xgb_passes = prediction_result.get("_xgb_passes_threshold", False)
+                logger.info(f"[P1] XGBoost 白名单 AUC 验证: {_latest_xgb_passes}")
                 # 写入 output 文件
                 try:
                     os.makedirs(output_dir, exist_ok=True)
@@ -350,6 +355,7 @@ def api_predict():
         "prediction": latest_prediction,
         "technical": latest_technical,
         "timestamp": datetime.now().isoformat(),
+        "_xgb_passes_threshold": _latest_xgb_passes,   # P1: 白名单XGBoost是否通过AUC验证
     }
     # 仅在有错误时保留调试信息
     if debug.get("errors"):
