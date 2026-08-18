@@ -182,6 +182,62 @@ class FeatureEngine:
         
         return df
     
+    def _add_cross_asset_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """拉取 VIX / 美元 / 美债 / 美股数据，生成与黄金的相关性特征"""
+        try:
+            import yfinance as yf
+            from config import CROSS_ASSET_SYMBOLS
+        except Exception:
+            return df
+
+        gold_close = df['close'] if 'close' in df.columns else None
+        if gold_close is None or len(df) < 20:
+            return df
+
+        symbols = CROSS_ASSET_SYMBOLS
+        for name, sym in symbols.items():
+            try:
+                end = df.index[-1]
+                start = df.index[0]
+                ex = yf.Ticker(sym).history(start=start, end=end, auto_adjust=True)
+                if ex.empty:
+                    continue
+                ex.index = pd.to_datetime(ex.index).tz_localize(None)
+                ex_c = ex['Close'].reindex(df.index).ffill().dropna()
+                if len(ex_c) < 10:
+                    continue
+
+                # 收益率相关性
+                gold_ret = gold_close.pct_change().dropna()
+                ex_ret = ex_c.pct_change().dropna()
+                min_len = min(len(gold_ret), len(ex_ret))
+                if min_len >= 10:
+                    corr = gold_ret.iloc[-min_len:].corr(ex_ret.iloc[-min_len:])
+                    if not np.isnan(corr):
+                        df.loc[ex_c.index, f'corr_{name}_return'] = corr
+
+                # 价格相关性（20日滚动）
+                df[f'corr_{name}_price'] = gold_close.rolling(20).corr(ex_c.reindex(gold_close.index).ffill())
+
+                logger.info(f"[Cross-Asset] {name}({sym}) 相关性={corr:.3f}" if not np.isnan(corr) else f"[Cross-Asset] {name} skip")
+            except Exception as e:
+                logger.warning(f"[Cross-Asset] {name} failed: {e}")
+        return df
+
+    def filter_whitelist(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        只保留白名单特征（130 → 12 大幅降噪）
+        外部调用：model.fit 之前用此方法过滤
+        """
+        from config import FEATURE_WHITELIST
+        keep = [c for c in FEATURE_WHITELIST if c in df.columns]
+        drop = [c for c in df.columns if c not in keep
+                and c not in ('close', 'open', 'high', 'low', 'volume')]
+        if drop:
+            logger.info(f"[Whitelist] 过滤掉 {len(drop)} 列，保留 {len(keep)} 列")
+            df = df.drop(columns=drop)
+        return df
+
     def build_features(self, gold_df: pd.DataFrame, 
                        macro_df: Optional[pd.DataFrame] = None,
                        additional_data: Optional[Dict[str, pd.DataFrame]] = None) -> pd.DataFrame:
@@ -214,7 +270,10 @@ class FeatureEngine:
                     merged = data.reindex(df.index).ffill()
                     for col in merged.columns:
                         df[f'ext_{name}_{col}'] = merged[col]
-        
+
+        # 3.5 跨资产特征（VIX / 美元 / 美债 / 美股，用 yfinance 实时拉）
+        df = self._add_cross_asset_features(df)
+
         # 4. 交叉特征
         df = self.add_cross_features(df)
         
