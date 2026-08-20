@@ -38,14 +38,44 @@ def predict(use_mock=True, verbose=True):
         print("\n📥 数据准备: 真实数据")
         from data.yahoo_collector import YahooFinanceCollector
         from data.fred_collector import FREDCollector
-        yc = YahooFinanceCollector()
-        gold_df = yc.fetch("GC=F", days=400)
+        from pathlib import Path
+
+        # P1 Phase ⑤: 优先读本地 5yr 历史数据（Render 启动时自动下载保存）
+        project_root = Path(__file__).resolve().parent
+        yr5_path = project_root / "data" / "gold_5yr.parquet"
+        if yr5_path.exists():
+            try:
+                import pandas as pd
+                gold_df = pd.read_parquet(yr5_path)
+                print(f"   黄金: 5yr历史数据 {len(gold_df)} 天 ✅（本地 Parquet）")
+            except Exception as e:
+                print(f"   5yr读取失败，回退实时下载: {e}")
+                gold_df = None
+        else:
+            print("   5yr数据不存在，实时下载...")
+            gold_df = None
+
+        # fallback: 实时 yfinance（补充最新数据）
+        if gold_df is None or len(gold_df) < 1000:
+            yc = YahooFinanceCollector()
+            live_df = yc.fetch("GC=F", days=400)
+            if live_df is not None and not live_df.empty:
+                if gold_df is not None and not gold_df.empty:
+                    # 合并：取 5yr 历史 + 最新实时（去重）
+                    import pandas as pd
+                    combined = pd.concat([gold_df, live_df]).drop_duplicates(subset=['close']).sort_index()
+                    gold_df = combined
+                    print(f"   黄金: 5yr+实时合并 {len(gold_df)} 天 ✅")
+                else:
+                    gold_df = live_df
+                    print(f"   黄金: 实时数据 {len(gold_df)} 天")
+            else:
+                if gold_df is None or gold_df.empty:
+                    print("   ⚠️ Yahoo 数据获取失败，回退到模拟数据")
+                    gold_df = generate_mock_gold_data(days=400)
+
         macro_data = FREDCollector().fetch_all()
-        if gold_df is None or gold_df.empty:
-            print("   ⚠️ Yahoo 数据获取失败，回退到模拟数据")
-            gold_df = generate_mock_gold_data(days=400)
-            macro_data = generate_mock_macro_data(days=400)
-        print(f"   黄金: {len(gold_df)} 天")
+        print(f"   黄金数据: {len(gold_df)} 天")
 
     print(f"   黄金数据: {len(gold_df)} 天")
     print(f"   最新价格: ${gold_df['close'].iloc[-1]:.2f}")
