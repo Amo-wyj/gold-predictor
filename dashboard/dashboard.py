@@ -39,6 +39,45 @@ _prediction_lock = threading.Lock()
 _prediction_initialized = False
 
 
+# ================================================================
+# P1 Phase ⑤：5年历史数据自动补全（Render 启动时执行）
+# 本地 IP 不通 yfinance/FRED/Stooq，Render 实例 IP 可用
+# ================================================================
+def _ensure_5yr_history(project_root):
+    """确保 data/gold_5yr.parquet 存在，不存在则从 yfinance 下载"""
+    import pandas as pd
+    data_dir = os.path.join(project_root, "data")
+    os.makedirs(data_dir, exist_ok=True)
+    fpath = os.path.join(data_dir, "gold_5yr.parquet")
+
+    if os.path.exists(fpath):
+        try:
+            df = pd.read_parquet(fpath)
+            if len(df) >= 1000:  # 约 5 年交易日约 1260 天
+                logger.info(f"[5yr] 本地已有 {len(df)} 条历史数据，跳过下载")
+                return
+        except Exception as e:
+            logger.warning(f"[5yr] 本地文件读取失败，将重新下载: {e}")
+
+    logger.info("[5yr] 正在下载 5 年黄金历史数据（Render 云端 IP）...")
+    try:
+        import yfinance as yf
+        end = pd.Timestamp.today()
+        start = end - pd.DateOffset(years=5)
+        ticker = yf.Ticker("GC=F")
+        df = ticker.history(start=start, end=end)
+        if df.empty:
+            raise RuntimeError("yfinance 返回空")
+        df = df.rename(columns={"Open": "open", "High": "high", "Low": "low", "Close": "close", "Volume": "volume"})
+        df = df[["open", "high", "low", "close", "volume"]]
+        df.index = pd.to_datetime(df.index).tz_localize(None)
+        df = df.sort_index().dropna(subset=["close"])
+        df.to_parquet(fpath)
+        logger.info(f"[5yr] ✅ 已保存 {len(df)} 条数据 → {fpath} ({os.path.getsize(fpath)//1024} KB)")
+    except Exception as e:
+        logger.warning(f"[5yr] ⚠️ 下载失败（不影响启动，继续用实时数据训练）: {e}")
+
+
 # 技术指标英文信号 → 中文（idempotent：已是中文则原样返回）
 TECH_SIGNAL_ZH = {
     'OVERSOLD': '超卖', 'OVERBOUGHT': '超买', 'NEUTRAL': '中性',
@@ -258,7 +297,10 @@ def init_dashboard():
             except Exception as e:
                 logger.warning(f"加载预测文件失败: {e}")
 
-    # 2) 云端 / Render 部署：跑一次实时预测
+    # 2) P1 Phase ⑤：确保 5 年历史数据存在
+    _ensure_5yr_history(project_root)
+
+    # 3) 云端 / Render 部署：跑一次实时预测
     if not loaded_from_file or not latest_prediction:
         try:
             import runpy
