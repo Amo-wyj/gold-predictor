@@ -297,8 +297,12 @@ def init_dashboard():
             except Exception as e:
                 logger.warning(f"加载预测文件失败: {e}")
 
-    # 2) P1 Phase ⑤：确保 5 年历史数据存在
-    _ensure_5yr_history(project_root)
+    # 2) P1 Phase ⑤：后台线程下载 5 年历史数据（不阻塞启动）
+    def _async_5yr():
+        _ensure_5yr_history(project_root)
+    _5yr_thread = threading.Thread(target=_async_5yr, daemon=True)
+    _5yr_thread.start()
+    logger.info("[init] 5yr 下载已在后台启动（不阻塞服务）")
 
     # 3) 云端 / Render 部署：跑一次实时预测
     if not loaded_from_file or not latest_prediction:
