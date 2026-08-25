@@ -293,7 +293,8 @@ class EnsemblePredictor:
             "current_price": self.current_price,
             "timestamp": datetime.now().isoformat(),
             "_xgb_passes_threshold": self.xgboost_passes_threshold,  # P1 debug
-            "_ml_model": self.xgboost_model.model_name if self.xgboost_model else None,  # P1: 实际ML模型名
+            "_ml_model": (self.xgboost_model.meta_info.get('model_name', 'unknown')
+                          if self.xgboost_model else None),  # P1: 实际ML模型名
             "_ml_cv_auc": {  # P1: LightGBM/XGBoost 各horizon CV AUC
                 f"{h}d": round(r['mean_auc'], 3)
                 for h, r in (self.xgboost_model.meta_info.get('cv_results', {})
@@ -322,7 +323,13 @@ class EnsemblePredictor:
 
         horizons = [1, 3, 5]
         ensemble_results = {}
-        ml_weight = self.MODEL_WEIGHTS["xgboost"] if active_model == "xgb" else self.MODEL_WEIGHTS["gbm"]
+        # 修复：GBM 降级时也用 0.45 权重（之前 MODEL_WEIGHTS["gbm"]=0.00 会导致降级模型权重为0）
+        if active_model == "xgb":
+            ml_weight = self.MODEL_WEIGHTS["xgboost"]
+        elif active_model == "gbm":
+            ml_weight = self.MODEL_WEIGHTS["xgboost"]  # GBM 降级时共享 XGBoost 权重
+        else:
+            ml_weight = 0.0
 
         for h in horizons:
             horizon_key = f"h{h}" if f"h{h}" in arima else f"horizon_{h}d"
