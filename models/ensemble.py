@@ -293,7 +293,7 @@ class EnsemblePredictor:
             "current_price": self.current_price,
             "timestamp": datetime.now().isoformat(),
             "_xgb_passes_threshold": self.xgboost_passes_threshold,  # P1 debug
-            "_ml_model": (self.xgboost_model.meta_info.get('model_name', 'unknown')
+            "_ml_model": (self.xgboost_model.model_name
                           if self.xgboost_model else None),  # P1: 实际ML模型名
             "_ml_cv_auc": {  # P1: LightGBM/XGBoost 各horizon CV AUC
                 f"{h}d": round(r['mean_auc'], 3)
