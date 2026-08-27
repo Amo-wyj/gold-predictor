@@ -811,3 +811,44 @@ def api_debug_features():
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     run_server()
+
+@app.route("/api/diag", methods=["GET"])
+def api_diag():
+    """
+    诊断端点：暴露 ML 训练细节，用于排查 _ml_cv_auc 为空
+    """
+    import sys, os, traceback
+    sys.path.insert(0, os.path.dirname(__file__))
+    try:
+        # 模拟 ensemble.predict() 的 ML 训练部分
+        from data.yahoo_collector import YahooFinanceCollector
+        from features.feature_engineering import FeatureEngine
+        from models.xgboost_model import GoldXGBoost
+
+        gold_df = YahooFinanceCollector().fetch("GC=F", days=400)
+        if gold_df is None or gold_df.empty:
+            return jsonify({"error": "无法获取数据"}), 500
+
+        fe = FeatureEngine()
+        features = fe.build_features(gold_df, macro_df=None)
+        if features is None or features.empty:
+            return jsonify({"error": "特征工程失败", "detail": "build_features returned None"}), 500
+
+        prices = gold_df['close']
+        model = GoldXGBoost()
+        meta = model.fit(features, prices=prices)
+
+        return jsonify({
+            "meta_keys": list(meta.keys()) if meta else None,
+            "meta": meta,
+            "model_name": model.model_name,
+            "passes": model._passes_threshold,
+            "feature_count": len(features.columns),
+        })
+    except Exception as e:
+        return jsonify({
+            "error": str(e),
+            "traceback": traceback.format_exc()[-500:],
+        }), 500
+
+
