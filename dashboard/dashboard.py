@@ -209,6 +209,33 @@ def _ensure_prediction() -> dict:
                             _latest_xgb_passes = data.get("_xgb_passes", False)
                             debug["steps"].append(f"loaded_from_file:{latest_file}")
                             _prediction_initialized = True
+                            # P1 Fix: 从文件加载后，触发异步 ML 训练（不阻塞返回）
+                            import threading
+                            def _bg_ml_train():
+                                try:
+                                    sys.path.insert(0, "/opt/gold-predictor")
+                                    from data.yahoo_collector import YahooFinanceCollector
+                                    from features.feature_engineering import FeatureEngine
+                                    from models.xgboost_model import GoldXGBoost
+                                    gold_df = YahooFinanceCollector().fetch("GC=F", days=400)
+                                    if gold_df is None: return
+                                    fe = FeatureEngine()
+                                    features = fe.build_features(gold_df, macro_df=None)
+                                    if features is None: return
+                                    prices = gold_df["close"]
+                                    model = GoldXGBoost()
+                                    meta = model.fit(features, prices=prices)
+                                    # 更新全局变量
+                                    global _latest_ml_auc, _latest_ml_model, _latest_xgb_passes
+                                    _latest_ml_auc = meta.get("cv_results", {}) if meta else {}
+                                    _latest_ml_model = model.model_name
+                                    _latest_xgb_passes = model._passes_threshold
+                                    logger.info(f"[P1 BG] ML训练完成: {_latest_ml_model} AUC={_latest_ml_auc}")
+                                    # 写回文件
+                                    _write_prediction_cache(latest_price, {}, {}, latest_price)
+                                except Exception as e:
+                                    logger.warning(f"[P1 BG] ML训练失败: {e}")
+                            threading.Thread(target=_bg_ml_train, daemon=True).start()
                             return debug
             except Exception as e:
                 debug["errors"].append(f"file_load_error: {e}")
