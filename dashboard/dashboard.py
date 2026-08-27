@@ -202,6 +202,11 @@ def _ensure_prediction() -> dict:
                             raw_tech = data.get("technical_analysis", {})
                             latest_technical = _normalize_technical(raw_tech)
                             latest_price = float(data["current_price"])
+                            # P1 Fix: 从文件恢复 ML 训练结果
+                            global _latest_ml_auc, _latest_ml_model, _latest_xgb_passes
+                            _latest_ml_auc = data.get("_ml_cv_auc", {})
+                            _latest_ml_model = data.get("_ml_model", "sklearn-GBClassifier")
+                            _latest_xgb_passes = data.get("_xgb_passes", False)
                             debug["steps"].append(f"loaded_from_file:{latest_file}")
                             _prediction_initialized = True
                             return debug
@@ -246,6 +251,10 @@ def _ensure_prediction() -> dict:
                             "current_price": latest_price,
                             "prediction": latest_prediction,
                             "technical_analysis": raw_tech,
+                            # P1 Fix: 保存 ML 训练结果
+                            "_ml_cv_auc": prediction_result.get("_ml_cv_auc", {}),
+                            "_ml_model": prediction_result.get("_ml_model", "unknown"),
+                            "_xgb_passes": prediction_result.get("_xgb_passes_threshold", False),
                         }, f, indent=2, default=str)
                     debug["steps"].append("prediction_written")
                 except Exception as e_write:
@@ -293,6 +302,11 @@ def init_dashboard():
                     latest_technical = _normalize_technical(raw_tech)
                     latest_price = data.get("current_price")
                     loaded_from_file = True
+                    # P1 Fix: 从文件恢复 ML 训练结果
+                    global _latest_ml_auc, _latest_ml_model, _latest_xgb_passes
+                    _latest_ml_auc = data.get("_ml_cv_auc", {})
+                    _latest_ml_model = data.get("_ml_model", "sklearn-GBClassifier")
+                    _latest_xgb_passes = data.get("_xgb_passes", False)
                     logger.info(f"从 {latest_file} 加载预测成功，技术指标: {list(latest_technical.keys())}")
             except Exception as e:
                 logger.warning(f"加载预测文件失败: {e}")
@@ -344,6 +358,10 @@ def init_dashboard():
                             "current_price": latest_price,
                             "prediction": latest_prediction,
                             "technical_analysis": raw_tech,
+                            # P1 Fix: 保存 ML 训练结果
+                            "_ml_cv_auc": prediction_result.get("_ml_cv_auc", {}),
+                            "_ml_model": prediction_result.get("_ml_model", "unknown"),
+                            "_xgb_passes": prediction_result.get("_xgb_passes_threshold", False),
                         }, f, indent=2, default=str)
                     logger.info(f"预测文件已写入 {ts}.json")
                 except Exception as e_write:
@@ -815,40 +833,27 @@ if __name__ == "__main__":
 @app.route("/api/diag", methods=["GET"])
 def api_diag():
     """
-    诊断端点：暴露 ML 训练细节，用于排查 _ml_cv_auc 为空
+    诊断端点：读取 init_dashboard() 保存的预测缓存，快速暴露 ML 训练详情。
+    避免重新训练（>3分钟会超时）。
     """
-    import sys, os, traceback
-    sys.path.insert(0, os.path.dirname(__file__))
+    output_dir = "/opt/gold-predictor/output"
     try:
-        # 模拟 ensemble.predict() 的 ML 训练部分
-        from data.yahoo_collector import YahooFinanceCollector
-        from features.feature_engineering import FeatureEngine
-        from models.xgboost_model import GoldXGBoost
-
-        gold_df = YahooFinanceCollector().fetch("GC=F", days=400)
-        if gold_df is None or gold_df.empty:
-            return jsonify({"error": "无法获取数据"}), 500
-
-        fe = FeatureEngine()
-        features = fe.build_features(gold_df, macro_df=None)
-        if features is None or features.empty:
-            return jsonify({"error": "特征工程失败", "detail": "build_features returned None"}), 500
-
-        prices = gold_df['close']
-        model = GoldXGBoost()
-        meta = model.fit(features, prices=prices)
-
-        return jsonify({
-            "meta_keys": list(meta.keys()) if meta else None,
-            "meta": meta,
-            "model_name": model.model_name,
-            "passes": model._passes_threshold,
-            "feature_count": len(features.columns),
-        })
+        if os.path.exists(output_dir):
+            files = sorted([f for f in os.listdir(output_dir) if f.startswith("prediction_")])
+            if files:
+                with open(os.path.join(output_dir, files[-1])) as f:
+                    data = json.load(f)
+                return jsonify({
+                    "source_file": files[-1],
+                    "price": data.get("current_price"),
+                    "timestamp": data.get("timestamp"),
+                    "_ml_cv_auc": data.get("_ml_cv_auc", "NOT_SAVED"),
+                    "_ml_model": data.get("_ml_model", "NOT_SAVED"),
+                    "_xgb_passes": data.get("_xgb_passes", "NOT_SAVED"),
+                    "prediction_keys": list(data.get("prediction", {}).keys()),
+                })
+        return jsonify({"error": "no prediction file found", "output_dir": output_dir}), 404
     except Exception as e:
-        return jsonify({
-            "error": str(e),
-            "traceback": traceback.format_exc()[-500:],
-        }), 500
+        return jsonify({"error": str(e)}), 500
 
 
