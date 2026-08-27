@@ -345,7 +345,7 @@ def init_dashboard():
     logger.info("[init] 5yr 下载已在后台启动（不阻塞服务）")
 
     # 3) 云端 / Render 部署：跑一次实时预测
-    if not loaded_from_file or not latest_prediction:
+    if not loaded_from_file:
         try:
             import runpy
             from pathlib import Path
