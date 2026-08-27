@@ -230,8 +230,14 @@ def _ensure_prediction() -> dict:
                                     _latest_ml_auc = meta.get("cv_results", {}) if meta else {}
                                     _latest_ml_model = model.model_name
                                     _latest_xgb_passes = model._passes_threshold
-                                    logger.info(f"[P1 BG] ML训练完成: {_latest_ml_model} AUC={_latest_ml_auc}")
-                                    # 全局变量已更新，下次/api/predict自动包含
+                                    # 写独立的 ML 结果文件（api_predict 会异步读取）
+                                    ml_out = {"_ml_cv_auc": _latest_ml_auc, "_ml_model": _latest_ml_model, "_xgb_passes": _latest_xgb_passes, "updated_at": datetime.now().isoformat()}
+                                    try:
+                                        os.makedirs("/opt/gold-predictor/output", exist_ok=True)
+                                        with open("/opt/gold-predictor/output/ml_result.json", "w") as f:
+                                            json.dump(ml_out, f)
+                                    except: pass
+                                    logger.info(f"[P1 BG] ML训练完成并写入文件: {_latest_ml_model} AUC={_latest_ml_auc}")
                                 except Exception as e:
                                     logger.warning(f"[P1 BG] ML训练失败: {e}")
                             threading.Thread(target=_bg_ml_train, daemon=True).start()
@@ -373,6 +379,12 @@ def init_dashboard():
                 _latest_xgb_passes = prediction_result.get("_xgb_passes_threshold", False)
                 _latest_ml_auc = prediction_result.get("_ml_cv_auc", {})
                 _latest_ml_model = prediction_result.get("_ml_model", "sklearn-GBClassifier")
+                # 也写入独立文件（供 api_predict 异步读取）
+                try:
+                    os.makedirs(output_dir, exist_ok=True)
+                    with open(f"{output_dir}/ml_result.json", "w") as f:
+                        json.dump({"_ml_cv_auc": _latest_ml_auc, "_ml_model": _latest_ml_model, "_xgb_passes": _latest_xgb_passes, "updated_at": datetime.now().isoformat()}, f)
+                except: pass
                 logger.info(f"[P1] {_latest_ml_model} AUC 验证: {_latest_xgb_passes} | CV AUC: {_latest_ml_auc}")
             else:
                 logger.warning("云端预测未返回有效结果，使用 mock")
@@ -452,8 +464,21 @@ def api_predict():
         "technical": latest_technical,
         "timestamp": datetime.now().isoformat(),
         "_xgb_passes_threshold": _latest_xgb_passes,   # P1: ML是否通过AUC验证
-        "_ml_model": _latest_ml_model,                  # P1: 实际ML模型（LightGBM/XGBoost）
-        "_ml_cv_auc": _latest_ml_auc,                   # P1: 各horizon CV AUC
+        # ── 读取 ML 训练结果（异步后台线程写入的独立文件）──
+        ml_file = "/opt/gold-predictor/output/ml_result.json"
+        _ml_auc_read, _ml_model_read, _ml_passes_read = {}, "sklearn-GBClassifier", False
+        if os.path.exists(ml_file):
+            try:
+                with open(ml_file) as f:
+                    ml_data = json.load(f)
+                    _ml_auc_read = ml_data.get("_ml_cv_auc", {})
+                    _ml_model_read = ml_data.get("_ml_model", "sklearn-GBClassifier")
+                    _ml_passes_read = ml_data.get("_xgb_passes", False)
+                    logger.info(f"[api_predict] 读取ML文件: {_ml_model_read} AUC={_ml_auc_read}")
+            except: pass
+
+        "_ml_model": _ml_model_read,                   # P1: 实际ML模型（LightGBM/XGBoost）
+        "_ml_cv_auc": _ml_auc_read,                    # P1: 各horizon CV AUC
     }
     # 仅在有错误时保留调试信息
     if debug.get("errors"):
