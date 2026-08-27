@@ -260,7 +260,7 @@ class FeatureEngine:
                 if ex.empty:
                     continue
                 ex.index = pd.to_datetime(ex.index).tz_localize(None)
-                ex_c = ex['Close'].reindex(df.index).ffill().dropna()
+                ex_c = ex['close'].reindex(df.index).ffill().dropna()
                 if len(ex_c) < 10:
                     continue
 
