@@ -307,7 +307,7 @@ class FeatureEngine:
         logger.info(f"[Features] 技术指标完成")
         
         # 2. 宏观因子
-        if macro_df is not None:
+        if macro_df is not None and macro_df:  # 防止 {} 进入 pd.concat
             # 支持 dict 输入（每个 key 对应一个 series）
             if isinstance(macro_df, dict):
                 # 重新索引 macro 数据以匹配 gold_df 的日期，列名用 key
