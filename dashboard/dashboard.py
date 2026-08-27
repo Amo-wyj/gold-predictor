@@ -31,7 +31,7 @@ latest_price = None
 prediction_history = []
 _latest_xgb_passes: bool = False   # P1: ML AUC 验证标记（白名单方案是否生效）
 _latest_ml_auc: Dict = {}          # P1: 各 horizon CV AUC（LightGBM/XGBoost）
-_latest_ml_model: str = "XGBoost"  # P1: 实际 ML 模型名
+_latest_ml_model: str = "sklearn-GBClassifier"  # P1: 实际 ML 模型名
 
 import threading
 
@@ -615,6 +615,7 @@ def api_debug_features():
     import yfinance as yf
     import numpy as np
     import pandas as pd
+    from features.feature_engineering import FeatureEngine
 
     try:
         import xgboost as xgb
@@ -635,122 +636,18 @@ def api_debug_features():
         low = gold["Low"]
         volume = gold["Volume"]
 
-        # ── 2. 构建特征（与 feature_engineering.py 完全一致）──────
-        features = {}
+        # ── 2. 构建特征（统一使用 FeatureEngine）──────────────
+        # 与 ensemble.py 共用 feature_engineering.py，确保同步升级
+        macro_data = {}  # debug端点不需宏观因子
+        try:
+            fe = FeatureEngine()
+            features = fe.build_features(gold, macro_data)
+            feat_df = features.copy()
+            feat_df = feat_df.replace([np.inf, -np.inf], np.nan).ffill().fillna(0)
+        except Exception as e_feat:
+            return jsonify({"error": f"FeatureEngine失败: {e_feat}"}), 500
 
-        # 移动平均线
-        for p in [5, 10, 20, 60, 120, 200]:
-            features[f"sma_{p}"] = close.rolling(p).mean()
-            features[f"ema_{p}"] = close.ewm(span=p, adjust=False).mean()
-
-        # RSI
-        for p in [7, 14, 21]:
-            delta = close.diff()
-            gain = delta.where(delta > 0, 0).rolling(p).mean()
-            loss = (-delta.where(delta < 0, 0)).rolling(p).mean()
-            rs = gain / (loss + 1e-10)
-            features[f"rsi_{p}"] = 100 - (100 / (1 + rs))
-
-        # MACD
-        ema12 = close.ewm(span=12, adjust=False).mean()
-        ema26 = close.ewm(span=26, adjust=False).mean()
-        macd_line = ema12 - ema26
-        features["macd"] = macd_line
-        features["macd_signal"] = macd_line.ewm(span=9, adjust=False).mean()
-        features["macd_hist"] = macd_line - macd_line.ewm(span=9, adjust=False).mean()
-
-        # KDJ
-        low14 = low.rolling(14).min()
-        high14 = high.rolling(14).max()
-        rsv = 100 * (close - low14) / (high14 - low14 + 1e-10)
-        features["kdj_k"] = rsv.ewm(com=2, adjust=False).mean()
-        features["kdj_d"] = features["kdj_k"].ewm(com=2, adjust=False).mean()
-        features["kdj_j"] = 3 * features["kdj_k"] - 2 * features["kdj_d"]
-
-        # ATR
-        tr1 = high - low
-        tr2 = np.abs(high - close.shift())
-        tr3 = np.abs(low - close.shift())
-        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-        features["atr_14"] = tr.rolling(14).mean()
-        features["atr_28"] = tr.rolling(28).mean()
-
-        # 布林带
-        for p in [20, 60]:
-            sma = close.rolling(p).mean()
-            std = close.rolling(p).std()
-            upper = sma + 2 * std
-            lower = sma - 2 * std
-            features[f"bb_width_{p}"] = (upper - lower) / (sma + 1e-10)
-            features[f"bb_position_{p}"] = (close - lower) / (upper - lower + 1e-10)
-
-        # ADX
-        for p in [14, 28]:
-            plus_dm = high.diff()
-            minus_dm = -low.diff()
-            plus_dm[plus_dm < 0] = 0
-            minus_dm[minus_dm < 0] = 0
-            tr_p = features["atr_14"] if p == 14 else features["atr_28"]
-            plus_di = 100 * plus_dm.rolling(p).mean() / (tr_p + 1e-10)
-            minus_di = 100 * minus_dm.rolling(p).mean() / (tr_p + 1e-10)
-            dx = 100 * np.abs(plus_di - minus_di) / (plus_di + minus_di + 1e-10)
-            features[f"adx_{p}"] = dx.rolling(p).mean()
-            features[f"plus_di_{p}"] = plus_di
-            features[f"minus_di_{p}"] = minus_di
-
-        # 成交量
-        features["volume_sma_20"] = volume.rolling(20).mean()
-        features["volume_ratio"] = volume / (features["volume_sma_20"] + 1)
-        obv = [0]
-        for i in range(1, len(close)):
-            if close.iloc[i] > close.iloc[i-1]:
-                obv.append(obv[-1] + volume.iloc[i])
-            elif close.iloc[i] < close.iloc[i-1]:
-                obv.append(obv[-1] - volume.iloc[i])
-            else:
-                obv.append(obv[-1])
-        features["obv"] = pd.Series(obv, index=close.index)
-        features["obv_sma_10"] = features["obv"].rolling(10).mean()
-
-        # 收益率
-        for p in [1, 2, 3, 5, 10, 20]:
-            features[f"return_{p}d"] = close.pct_change(p)
-            features[f"volatility_{p}d"] = close.pct_change().rolling(p).std()
-
-        # 黄金特有
-        for p in [20, 60]:
-            features[f"high_{p}d"] = high.rolling(p).max()
-            features[f"low_{p}d"] = low.rolling(p).min()
-            features[f"position_in_range_{p}d"] = (close - features[f"low_{p}d"]) / (
-                features[f"high_{p}d"] - features[f"low_{p}d"] + 1e-10)
-
-        features["intraday_range"] = (high - low) / (close + 1e-10)
-        features["close_position"] = (close - low) / (high - low + 1e-10)
-
-        # 跨资产
-        cross_ok = False
-        for name, sym in [("vix", "^VIX"), ("dxy", "UUP"), ("tlt", "TLT"), ("spy", "SPY")]:
-            try:
-                ex = yf.Ticker(sym).history(start=gold.index[0], end=gold.index[-1], auto_adjust=True)
-                ex.index = pd.to_datetime(ex.index).tz_localize(None)
-                ex_c = ex["Close"].reindex(gold.index).ffill()
-                features[f"corr_{name}_close"] = close.rolling(20).corr(ex_c)
-                features[f"corr_{name}_return"] = close.pct_change().rolling(10).corr(ex_c.pct_change())
-                cross_ok = True
-            except Exception:
-                pass
-
-        feat_df = pd.DataFrame(features, index=gold.index)
-        feat_df["close"] = close
-        feat_df = feat_df.replace([np.inf, -np.inf], np.nan).ffill().fillna(0)
-
-        # 特征列
-        exclude = {"close", "volume", "open", "high", "low"}
-        feature_cols = [c for c in feat_df.columns if c.lower() not in exclude]
-        n_features = len(feature_cols)
-
-        if n_features < 10:
-            return jsonify({"error": "特征数不足"}), 400
+        # 特征列（与 ensemble.py 一致）
 
         # ── 3. 打分：相关性轨道 ─────────────────────────────────
         horizons = [1, 3, 5]
