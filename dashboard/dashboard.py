@@ -231,8 +231,7 @@ def _ensure_prediction() -> dict:
                                     _latest_ml_model = model.model_name
                                     _latest_xgb_passes = model._passes_threshold
                                     logger.info(f"[P1 BG] ML训练完成: {_latest_ml_model} AUC={_latest_ml_auc}")
-                                    # 写回文件
-                                    _write_prediction_cache(latest_price, {}, {}, latest_price)
+                                    # 全局变量已更新，下次/api/predict自动包含
                                 except Exception as e:
                                     logger.warning(f"[P1 BG] ML训练失败: {e}")
                             threading.Thread(target=_bg_ml_train, daemon=True).start()
@@ -700,6 +699,8 @@ def api_debug_features():
             return jsonify({"error": f"FeatureEngine失败: {e_feat}"}), 500
 
         # 特征列（与 ensemble.py 一致）
+        feature_cols = [c for c in feat_df.columns
+                        if c not in ["close", "volume", "timestamp"]]
 
         # ── 3. 打分：相关性轨道 ─────────────────────────────────
         horizons = [1, 3, 5]
