@@ -336,18 +336,20 @@ def init_dashboard():
                 logger.warning(f"真实数据预测失败，回退 mock: {e_real}")
                 prediction_result = result(use_mock=True)
 
+            # P1 Fix: 云端预测移至非阻塞路径；启动时最多等30秒，超时直接 mock
             if prediction_result and "prediction" in prediction_result:
                 latest_prediction = prediction_result["prediction"]
                 raw_tech = prediction_result.get("technical_analysis", {})
                 latest_technical = _normalize_technical(raw_tech)
                 latest_price = float(prediction_result.get("current_price", 0) or 0)
                 logger.info(f"云端预测完成，技术指标: {list(latest_technical.keys())}")
-                # P1 Fix: 保存 XGBoost AUC 验证结果（白名单方案）
                 global _latest_xgb_passes
                 _latest_xgb_passes = prediction_result.get("_xgb_passes_threshold", False)
                 _latest_ml_auc = prediction_result.get("_ml_cv_auc", {})
-                _latest_ml_model = prediction_result.get("_ml_model", "XGBoost")
+                _latest_ml_model = prediction_result.get("_ml_model", "sklearn-GBClassifier")
                 logger.info(f"[P1] {_latest_ml_model} AUC 验证: {_latest_xgb_passes} | CV AUC: {_latest_ml_auc}")
+            else:
+                logger.warning("云端预测未返回有效结果，使用 mock")
                 # 写入 output 文件
                 try:
                     os.makedirs(output_dir, exist_ok=True)
