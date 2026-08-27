@@ -15,6 +15,9 @@ logger = logging.getLogger(__name__)
 
 
 class GoldXGBoost:
+    # 类属性：模型标识
+    model_name: str = "sklearn-GBClassifier"
+
     """
     梯度提升方向分类器（sklearn 实现，替代 XGBoost）
     输入：特征矩阵 → 输出：各周期涨跌概率 + AUC 验证
@@ -22,6 +25,7 @@ class GoldXGBoost:
 
     def __init__(self):
         self._passes_threshold = False
+        self.model_name = GoldXGBoost.model_name  # 实例属性
         self.meta_info: Dict = {}
         self._models: Dict[int, object] = {}
         self._feature_cols: list = []
@@ -173,20 +177,20 @@ class GoldXGBoost:
             )
 
             self.meta_info = {
-                'cv_results': cv_results,
+                'cv_results': {str(k): v for k, v in cv_results.items()},  # JSON需str key
                 'status': status,
                 'passes': self._passes_threshold,
                 'overall_auc': round(overall_auc, 4),
                 'n_features': len(self._feature_cols),
                 'n_samples': len(y_h),
-                'model_name': 'sklearn-GBClassifier',
+                'model_name': GoldXGBoost.model_name,
             }
             return self.meta_info
 
         except Exception as e:
             logger.warning(f"[GBClassifier] 训练失败: {e}")
             self._passes_threshold = False
-            self.meta_info = {'cv_results': {}, 'status': 'failed', 'passes': False}
+            self.meta_info = {'cv_results': {}, 'status': 'failed', 'passes': False, 'model_name': GoldXGBoost.model_name}
             return self.meta_info
 
     # ─────────────────────────────────────────────────────────────
