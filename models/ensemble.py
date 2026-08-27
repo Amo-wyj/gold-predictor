@@ -245,7 +245,7 @@ class EnsemblePredictor:
                     self._ml_cv_auc = {str(k): round(v['mean_auc'], 3) for k, v in meta['cv_results'].items()}
                     logger.info(f"[P1-DIAG] meta keys={list(meta.keys())} cv_results={self._ml_cv_auc}")
                 else:
-                    logger.warning(f"[P1-DIAG] meta={'None' if meta is None else 'no cv_results'}")
+                    logger.error(f"[P1-DIAG] meta={'None' if meta is None else 'no cv_results'} xgb_model={self.xgboost_model}")
                 # 强制验证 model_name 属性
                 try:
                     mn = self.xgboost_model.model_name
