@@ -627,14 +627,19 @@ def api_debug_features():
         # ── 1. 获取数据 ──────────────────────────────────────────
         gold = yf.Ticker("GC=F").history(period="2y", auto_adjust=True)
         gold.index = pd.to_datetime(gold.index).tz_localize(None)
+        # yfinance 返回大写列名（Close），统一转为小写（与 yahoo_collector.py 保持一致）
+        gold = gold.rename(columns={
+            'Open': 'open', 'High': 'high', 'Low': 'low',
+            'Close': 'close', 'Volume': 'volume'
+        })
 
         if len(gold) < 200:
             return jsonify({"error": f"数据不足: {len(gold)} 天"}), 400
 
-        close = gold["Close"]
-        high = gold["High"]
-        low = gold["Low"]
-        volume = gold["Volume"]
+        close = gold["close"]
+        high = gold["high"]
+        low = gold["low"]
+        volume = gold["volume"]
 
         # ── 2. 构建特征（统一使用 FeatureEngine）──────────────
         # 与 ensemble.py 共用 feature_engineering.py，确保同步升级
