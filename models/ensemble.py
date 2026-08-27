@@ -241,7 +241,6 @@ class EnsemblePredictor:
                 self.xgboost_passes_threshold = self.xgboost_model._passes_threshold
                 # P1: 无论阈值是否通过，都用 meta 填充 AUC（直接引用 fit 返回值，最可靠）
                 if meta and 'cv_results' in meta:
-                    if meta and 'cv_results' in meta:
                     self._ml_cv_auc = {str(k): round(v['mean_auc'], 3) for k, v in meta['cv_results'].items()}
                     logger.info(f"[P1-DIAG] meta keys={list(meta.keys())} cv_results={self._ml_cv_auc}")
                 else:
