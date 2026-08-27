@@ -233,11 +233,15 @@ class EnsemblePredictor:
 
         # 2. XGBoost 预测（P1 新增：延迟训练，优先使用）
         xgb_results = {}
+        self._ml_cv_auc = {}  # P1: 持久化 AUC，供 return 使用
         if self.current_features is not None:
             try:
                 self.xgboost_model = GoldXGBoost()  # P1: XGBoost（LightGBM在Render Free安装失败，回退）
                 meta = self.xgboost_model.fit(self.current_features, prices=prices)
                 self.xgboost_passes_threshold = self.xgboost_model._passes_threshold
+                # P1: 无论阈值是否通过，都用 meta 填充 AUC（直接引用 fit 返回值，最可靠）
+                if meta and 'cv_results' in meta:
+                    self._ml_cv_auc = {str(k): round(v['mean_auc'], 3) for k, v in meta['cv_results'].items()}
                 if self.xgboost_passes_threshold:
                     xgb_results = self.xgboost_model.predict_direction_probability(
                         self.current_features
@@ -295,23 +299,9 @@ class EnsemblePredictor:
             "_xgb_passes_threshold": self.xgboost_passes_threshold,  # P1 debug
             "_ml_model": (self.xgboost_model.model_name
                           if self.xgboost_model else None),  # P1: 实际ML模型名
-            "_ml_cv_auc": {  # P1: LightGBM/XGBoost 各horizon CV AUC
-                f"{h}d": round(r['mean_auc'], 3)
-                for h, r in (self.xgboost_model.meta_info.get('cv_results', {})
-                             if self.xgboost_model else {}).items()
-            },
+            "_ml_cv_auc": self._ml_cv_auc,  # P1: 各horizon CV AUC（已由上述逻辑填充）
         }
 
-        # 3. 技术分析
-        tech_analysis = self.analyze_technical()
-
-        # 4. 集成输出
-        final_prediction = self._ensemble_output(
-            arima_results, gbm_results, tech_analysis
-        )
-
-
-    
     def _ensemble_output(
         self,
         arima: Dict,
