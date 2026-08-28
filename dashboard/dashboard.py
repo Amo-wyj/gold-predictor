@@ -203,7 +203,7 @@ def _ensure_prediction() -> dict:
                             latest_technical = _normalize_technical(raw_tech)
                             latest_price = float(data["current_price"])
                             # P1 Fix: 从文件恢复 ML 训练结果
-                            global _latest_ml_auc, _latest_ml_model, _latest_xgb_passes
+                            # (重复 global 已删除)
                             _latest_ml_auc = data.get("_ml_cv_auc", {})
                             _latest_ml_model = data.get("_ml_model", "sklearn-GBClassifier")
                             _latest_xgb_passes = data.get("_xgb_passes", False)
@@ -215,7 +215,7 @@ def _ensure_prediction() -> dict:
                                 try:
                                     with open(_ml_file) as f:
                                         ml_data = json.load(f)
-                                        global _latest_ml_auc, _latest_ml_model, _latest_xgb_passes
+                                        # (重复 global 已删除)
                                         _latest_ml_auc = ml_data.get("_ml_cv_auc", {})
                                         _latest_ml_model = ml_data.get("_ml_model", "sklearn-GBClassifier")
                                         _latest_xgb_passes = ml_data.get("_xgb_passes", False)
@@ -238,7 +238,7 @@ def _ensure_prediction() -> dict:
                                     model = GoldXGBoost()
                                     meta = model.fit(features, prices=prices)
                                     # 更新全局变量
-                                    global _latest_ml_auc, _latest_ml_model, _latest_xgb_passes
+                                    # (重复 global 已删除)
                                     _latest_ml_auc = meta.get("cv_results", {}) if meta else {}
                                     _latest_ml_model = model.model_name
                                     _latest_xgb_passes = model._passes_threshold
@@ -358,7 +358,7 @@ def init_dashboard():
                     latest_price = data.get("current_price")
                     loaded_from_file = True
                     # P1 Fix: 从文件恢复 ML 训练结果
-                    global _latest_ml_auc, _latest_ml_model, _latest_xgb_passes
+                    # (重复 global 已删除)
                     _latest_ml_auc = data.get("_ml_cv_auc", {})
                     _latest_ml_model = data.get("_ml_model", "sklearn-GBClassifier")
                     _latest_xgb_passes = data.get("_xgb_passes", False)
@@ -408,7 +408,7 @@ def init_dashboard():
                 latest_technical = _normalize_technical(raw_tech)
                 latest_price = float(prediction_result.get("current_price", 0) or 0)
                 logger.info(f"云端预测完成，技术指标: {list(latest_technical.keys())}")
-                global _latest_xgb_passes
+                # (重复 global 已删除)
                 _latest_xgb_passes = prediction_result.get("_xgb_passes_threshold", False)
                 _latest_ml_auc = prediction_result.get("_ml_cv_auc", {})
                 _latest_ml_model = prediction_result.get("_ml_model", "sklearn-GBClassifier")
