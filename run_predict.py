@@ -85,6 +85,7 @@ def predict(use_mock=True, verbose=True):
 
     # Step 2: 特征工程
     print("\n🔧 特征工程...")
+    FeatureEngine, _, _, EnsemblePredictor = _lazy_imports()
     fe = FeatureEngine()
     features = fe.build_features(gold_df, macro_data)
     print(f"   特征数: {len(features.columns)}")
