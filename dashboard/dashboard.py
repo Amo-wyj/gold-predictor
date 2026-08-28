@@ -936,6 +936,73 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     run_server()
 
+
+
+@app.route("/api/diag/modules")
+def api_diag_modules():
+    """🔍 直接测试各模块是否可导入（绕过runpy.run_path）"""
+    results = {}
+    
+    # 1. 测试基础模块
+    try:
+        import yfinance as yf
+        results["yfinance"] = f"✅ {yf.__version__}"
+    except Exception as e:
+        results["yfinance"] = f"❌ {type(e).__name__}: {e}"
+    
+    try:
+        import pandas as pd
+        results["pandas"] = f"✅ {pd.__version__}"
+    except Exception as e:
+        results["pandas"] = f"❌ {type(e).__name__}"
+    
+    try:
+        import sklearn
+        results["sklearn"] = f"✅ {sklearn.__version__}"
+    except Exception as e:
+        results["sklearn"] = f"❌ {type(e).__name__}"
+    
+    # 2. 测试项目模块
+    try:
+        sys.path.insert(0, "/opt/gold-predictor")
+        from features.feature_engineering import FeatureEngine
+        results["FeatureEngine"] = "✅ 可导入"
+    except Exception as e:
+        results["FeatureEngine"] = f"❌ {type(e).__name__}: {str(e)[:80]}"
+    
+    try:
+        from models.ensemble import EnsemblePredictor
+        results["EnsemblePredictor"] = "✅ 可导入"
+    except Exception as e:
+        results["EnsemblePredictor"] = f"❌ {type(e).__name__}: {str(e)[:80]}"
+    
+    # 3. 测试数据获取
+    try:
+        import yfinance as yf
+        ticker = yf.Ticker("GC=F")
+        hist = ticker.history(period="5d", auto_adjust=True)
+        results["yfinance_fetch"] = f"✅ {len(hist)} days, latest=${hist['Close'].iloc[-1]:.2f}" if len(hist) > 0 else "❌ 空数据"
+    except Exception as e:
+        results["yfinance_fetch"] = f"❌ {type(e).__name__}: {str(e)[:80]}"
+    
+    # 4. 测试 FRED
+    try:
+        import requests
+        r = requests.get(
+            "https://api.stlouisfed.org/fred/series/observations",
+            params={"series_id": "DGS10", "api_key": "b174af24d93f1ca58902ee7b4b4a1935",
+                    "file_type": "json", "limit": 5}, timeout=10
+        )
+        if r.status_code == 200:
+            results["FRED"] = f"✅ {len(r.json().get('observations', []))} obs"
+        else:
+            results["FRED"] = f"❌ HTTP {r.status_code}"
+    except Exception as e:
+        results["FRED"] = f"❌ {type(e).__name__}: {str(e)[:80]}"
+    
+    return jsonify(results)
+
+
 @app.route("/api/diag", methods=["GET"])
 def api_diag():
     """
