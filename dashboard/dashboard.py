@@ -209,6 +209,18 @@ def _ensure_prediction() -> dict:
                             _latest_xgb_passes = data.get("_xgb_passes", False)
                             debug["steps"].append(f"loaded_from_file:{latest_file}")
                             _prediction_initialized = True
+                            # P1 Fix: 从文件加载后，也要读 ml_result.json（后台线程可能已完成）
+                            _ml_file = "/opt/gold-predictor/output/ml_result.json"
+                            if os.path.exists(_ml_file):
+                                try:
+                                    with open(_ml_file) as f:
+                                        ml_data = json.load(f)
+                                        global _latest_ml_auc, _latest_ml_model, _latest_xgb_passes
+                                        _latest_ml_auc = ml_data.get("_ml_cv_auc", {})
+                                        _latest_ml_model = ml_data.get("_ml_model", "sklearn-GBClassifier")
+                                        _latest_xgb_passes = ml_data.get("_xgb_passes", False)
+                                        logger.info(f"[_ensure] 从ml_result.json恢复: {_latest_ml_model} AUC={_latest_ml_auc}")
+                                except: pass
                             # P1 Fix: 从文件加载后，触发异步 ML 训练（不阻塞返回）
                             import threading
                             def _bg_ml_train():
