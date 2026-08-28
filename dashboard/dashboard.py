@@ -497,40 +497,40 @@ def api_predict():
         "technical": latest_technical,
         "timestamp": datetime.now().isoformat(),
         "_xgb_passes_threshold": _latest_xgb_passes,   # P1: ML是否通过AUC验证
-        # ── 获取 ML 结果（优先读缓存文件；缺失则同步触发训练）──
-        ml_file = "/opt/gold-predictor/output/ml_result.json"
-        _ml_auc_s, _ml_model_s, _ml_passes_s = _latest_ml_auc, _latest_ml_model, _latest_xgb_passes
-        if os.path.exists(ml_file):
-            try:
+    }
+    # ── 获取 ML 结果（优先读缓存文件；缺失则同步触发训练）──
+    ml_file = "/opt/gold-predictor/output/ml_result.json"
+    _ml_auc_s, _ml_model_s, _ml_passes_s = _latest_ml_auc, _latest_ml_model, _latest_xgb_passes
+    if os.path.exists(ml_file):
+        try:
+            with open(ml_file) as f:
+                ml_data = json.load(f)
+                _ml_auc_s = ml_data.get("_ml_cv_auc", _ml_auc_s)
+                _ml_model_s = ml_data.get("_ml_model", _ml_model_s)
+                _ml_passes_s = ml_data.get("_xgb_passes", _ml_passes_s)
+                logger.info(f"[api_predict] ml_file: {_ml_model_s} AUC={_ml_auc_s}")
+        except: pass
+    # 文件缺失（BG未完成）：同步调用预测管道获取真实ML AUC
+    if not _ml_auc_s:
+        logger.warning("[api_predict] ml_result.json 缺失，同步运行预测管道...")
+        try:
+            import subprocess as _sp
+            r = _sp.run(
+                ["python3", "/opt/render/project/src/run_predict.py", "--ml-only"],
+                capture_output=True, text=True, timeout=90
+            )
+            logger.info(f"[api_predict] 同步ML stderr: {r.stderr[-200:]}")
+            if r.returncode == 0 and os.path.exists(ml_file):
                 with open(ml_file) as f:
                     ml_data = json.load(f)
                     _ml_auc_s = ml_data.get("_ml_cv_auc", _ml_auc_s)
                     _ml_model_s = ml_data.get("_ml_model", _ml_model_s)
                     _ml_passes_s = ml_data.get("_xgb_passes", _ml_passes_s)
-                    logger.info(f"[api_predict] ml_file: {_ml_model_s} AUC={_ml_auc_s}")
-            except: pass
-        # 文件缺失（BG未完成）：同步调用预测管道获取真实ML AUC
-        if not _ml_auc_s:
-            logger.warning("[api_predict] ml_result.json 缺失，同步运行预测管道...")
-            try:
-                import subprocess as _sp
-                r = _sp.run(
-                    ["python3", "/opt/render/project/src/run_predict.py", "--ml-only"],
-                    capture_output=True, text=True, timeout=90
-                )
-                logger.info(f"[api_predict] 同步ML stderr: {r.stderr[-200:]}")
-                if r.returncode == 0 and os.path.exists(ml_file):
-                    with open(ml_file) as f:
-                        ml_data = json.load(f)
-                        _ml_auc_s = ml_data.get("_ml_cv_auc", _ml_auc_s)
-                        _ml_model_s = ml_data.get("_ml_model", _ml_model_s)
-                        _ml_passes_s = ml_data.get("_xgb_passes", _ml_passes_s)
-            except Exception as e:
-                logger.warning(f"[api_predict] 同步ML失败: {e}")
+        except Exception as e:
+            logger.warning(f"[api_predict] 同步ML失败: {e}")
 
-        "_ml_model": _ml_model_s,                      # P1: 实际ML模型
-        "_ml_cv_auc": _ml_auc_s,                       # P1: 各horizon CV AUC
-    }
+    resp["_ml_model"] = _ml_model_s                   # P1: 实际ML模型
+    resp["_ml_cv_auc"] = _ml_auc_s                    # P1: 各horizon CV AUC
     # 仅在有错误时保留调试信息
     if debug.get("errors"):
         resp["_debug"] = debug
