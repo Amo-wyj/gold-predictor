@@ -164,10 +164,9 @@ if __name__ == "__main__":
         print("\n🚀 启动 Dashboard...")
         from dashboard.dashboard import run_server
         run_server(host="0.0.0.0", port=5000)
-    else:
-        if args.ml_only:
+    elif args.ml_only:
         import sys as _sys
-        _sys.path.insert(0, str(Path(__file__).resolve().parent))
+        _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
         from models.ensemble import EnsemblePredictor
         from data.yahoo_collector import GoldYFinance
         from data.fred_collector import FREDCollector
@@ -190,6 +189,7 @@ if __name__ == "__main__":
                 "updated_at": datetime.now().isoformat()
             }, f)
         print(f"ML 训练完成: AUC={ensemble._ml_cv_auc}")
-        sys.exit(0)
-    result = predict(use_mock=not args.real)
+        _sys.exit(0)
+    else:
+        result = predict(use_mock=not args.real)
         print("\n✅ 预测完成")
