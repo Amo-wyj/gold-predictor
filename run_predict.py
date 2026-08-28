@@ -17,10 +17,13 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from datetime import datetime
 from data.mock_data import generate_mock_gold_data, generate_mock_macro_data
-from features.feature_engineering import FeatureEngine
-from models.arima_model import GoldARIMA
-from models.gbm_model import GoldGBM
-from models.ensemble import EnsemblePredictor
+# 懒加载：不在模块导入时加载（避免 Render Free 启动阻塞）
+def _lazy_imports():
+    from features.feature_engineering import FeatureEngine
+    from models.arima_model import GoldARIMA
+    from models.gbm_model import GoldGBM
+    from models.ensemble import EnsemblePredictor
+    return FeatureEngine, GoldARIMA, GoldGBM, EnsemblePredictor
 
 
 def predict(use_mock=True, verbose=True):
