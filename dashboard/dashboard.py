@@ -385,7 +385,7 @@ def init_dashboard():
                 raise RuntimeError("run_predict.predict 函数未找到")
 
             prediction_result = None
-            import signal as _sig_s
+            import signal as _sig_s, traceback as _tb
             def _to_h(signum, frame): raise TimeoutError("预测超时30s")
             try:
                 _sig_s.signal(_sig_s.SIGALRM, _to_h)
@@ -398,7 +398,7 @@ def init_dashboard():
             except Exception as e_real:
                 try: _sig_s.alarm(0)
                 except: pass
-                logger.warning(f"真实数据预测失败，回退mock: {e_real}")
+                logger.warning(f"真实预测异常: {type(e_real).__name__}: {e_real}\n{traceback.format_exc()}")
                 prediction_result = result(use_mock=True)
 
             # P1 Fix: 云端预测移至非阻塞路径；启动时最多等30秒，超时直接 mock
