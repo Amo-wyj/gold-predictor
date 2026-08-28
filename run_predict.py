@@ -157,6 +157,7 @@ if __name__ == "__main__":
     parser.add_argument('--real', action='store_true', help='使用真实数据（需联网）')
     parser.add_argument('--dashboard', action='store_true', help='启动 Web Dashboard')
     parser.add_argument('--full', action='store_true', help='预测 + Dashboard')
+    parser.add_argument('--ml-only', action='store_true', help='仅运行 ML 训练（不保存预测结果）')
     args = parser.parse_args()
 
     if args.dashboard or args.full:
@@ -164,5 +165,31 @@ if __name__ == "__main__":
         from dashboard.dashboard import run_server
         run_server(host="0.0.0.0", port=5000)
     else:
-        result = predict(use_mock=not args.real)
+        if args.ml_only:
+        import sys as _sys
+        _sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from models.ensemble import EnsemblePredictor
+        from data.yahoo_collector import GoldYFinance
+        from data.fred_collector import FREDCollector
+        from features.feature_engineering import FeatureEngine
+        import json as _json
+        print("开始 ML 训练（--ml-only）...")
+        gold_df = GoldYFinance().fetch(days=500)
+        macro_data = FREDCollector().fetch_all()
+        fe = FeatureEngine()
+        features = fe.build_features(gold_df, macro_data)
+        ensemble = EnsemblePredictor()
+        ensemble.update_data(gold_df, macro_data)
+        meta = ensemble.xgboost_model.fit(ensemble.current_features, gold_df['close'])
+        os.makedirs("/opt/gold-predictor/output", exist_ok=True)
+        with open("/opt/gold-predictor/output/ml_result.json", "w") as f:
+            _json.dump({
+                "_ml_cv_auc": ensemble._ml_cv_auc,
+                "_ml_model": ensemble.xgboost_model.meta_info.get("model_name", "sklearn-GBClassifier"),
+                "_xgb_passes": ensemble.xgboost_passes_threshold,
+                "updated_at": datetime.now().isoformat()
+            }, f)
+        print(f"ML 训练完成: AUC={ensemble._ml_cv_auc}")
+        sys.exit(0)
+    result = predict(use_mock=not args.real)
         print("\n✅ 预测完成")
