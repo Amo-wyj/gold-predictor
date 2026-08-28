@@ -296,9 +296,9 @@ def _ensure_prediction() -> dict:
                             "prediction": latest_prediction,
                             "technical_analysis": raw_tech,
                             # P1 Fix: 保存 ML 训练结果
-                            "_ml_cv_auc": prediction_result.get("_ml_cv_auc", {}),
-                            "_ml_model": prediction_result.get("_ml_model", "unknown"),
-                            "_xgb_passes": prediction_result.get("_xgb_passes_threshold", False),
+                            "_ml_cv_auc": _latest_ml_auc if '_latest_ml_auc' in dir() else prediction_result.get("_ml_cv_auc", {}),
+                            "_ml_model": _latest_ml_model if '_latest_ml_model' in dir() else prediction_result.get("_ml_model", "unknown"),
+                            "_xgb_passes": _latest_xgb_passes if '_latest_xgb_passes' in dir() else prediction_result.get("_xgb_passes_threshold", False),
                         }, f, indent=2, default=str)
                     debug["steps"].append("prediction_written")
                 except Exception as e_write:
@@ -306,7 +306,12 @@ def _ensure_prediction() -> dict:
         except Exception as e:
             debug["errors"].append(f"predict_pipeline_error: {e}")
 
-        # 3) 兜底 mock
+        # 3) 保留真实 ML 字段（即使走 mock 预测）
+        _saved_ml_auc = (_latest_ml_auc or {}) if '_latest_ml_auc' in dir() else {}
+        _saved_ml_model = _latest_ml_model if '_latest_ml_model' in dir() else "sklearn-GBClassifier"
+        _saved_xgb_passes = _latest_xgb_passes if '_latest_xgb_passes' in dir() else False
+
+        # 4) 兜底 mock
         if not latest_prediction or latest_price is None:
             seed_price = float(latest_price) if latest_price else 2000.0
             latest_prediction = _build_mock_prediction(seed_price)
@@ -322,6 +327,12 @@ def _ensure_prediction() -> dict:
                 "ADX":  {"value": float(rng.uniform(15, 35)),  "signal": "偏弱"},
             }
             debug["steps"].append("fallback_mock")
+            # 用真实 ML 字段覆盖 mock 字段
+            if _saved_ml_auc:
+                _latest_ml_auc = _saved_ml_auc
+                _latest_ml_model = _saved_ml_model
+                _latest_xgb_passes = _saved_xgb_passes
+                debug["steps"].append("ml_fields_restored")
 
         _prediction_initialized = True
         return debug
@@ -411,9 +422,9 @@ def init_dashboard():
                             "prediction": latest_prediction,
                             "technical_analysis": raw_tech,
                             # P1 Fix: 保存 ML 训练结果
-                            "_ml_cv_auc": prediction_result.get("_ml_cv_auc", {}),
-                            "_ml_model": prediction_result.get("_ml_model", "unknown"),
-                            "_xgb_passes": prediction_result.get("_xgb_passes_threshold", False),
+                            "_ml_cv_auc": _latest_ml_auc if '_latest_ml_auc' in dir() else prediction_result.get("_ml_cv_auc", {}),
+                            "_ml_model": _latest_ml_model if '_latest_ml_model' in dir() else prediction_result.get("_ml_model", "unknown"),
+                            "_xgb_passes": _latest_xgb_passes if '_latest_xgb_passes' in dir() else prediction_result.get("_xgb_passes_threshold", False),
                         }, f, indent=2, default=str)
                     logger.info(f"预测文件已写入 {ts}.json")
                 except Exception as e_write:
