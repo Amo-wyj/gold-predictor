@@ -27,8 +27,9 @@ class EnsemblePredictor:
         "arima": 0.25,
         "xgboost": 0.45,   # P1: XGBoost 原生概率替代 GBM 蒙特卡洛模拟
         "gbm": 0.00,        # GBM 保留学名（仅作降级备选，不参与默认 ensemble）
-        "technical": 0.20,
-        "macro": 0.10,
+        "technical": 0.18,  # P2: 略降，腾出情绪权重
+        "sentiment": 0.12,  # P2: 规则版新闻情绪
+        "macro": 0.00,      # 仍只做展示，不进加权（原 0.10 已让给 sentiment）
     }
     
     # 技术指标阈值
@@ -49,7 +50,16 @@ class EnsemblePredictor:
         self.current_features = None
         self.current_price = None
         self.current_macro = None
+        self.current_sentiment: Dict = {}
         self.last_prediction_time = None
+        # 允许从 config 覆盖情绪权重
+        try:
+            from config import NEWS_SENTIMENT
+            if NEWS_SENTIMENT.get("enabled") and NEWS_SENTIMENT.get("weight") is not None:
+                self.MODEL_WEIGHTS = dict(self.MODEL_WEIGHTS)
+                self.MODEL_WEIGHTS["sentiment"] = float(NEWS_SENTIMENT["weight"])
+        except Exception:
+            pass
     
     def update_data(self, gold_df: pd.DataFrame, 
                     macro_df: Optional[pd.DataFrame] = None) -> bool:
@@ -287,6 +297,10 @@ class EnsemblePredictor:
         # 4. 技术分析
         tech_analysis = self.analyze_technical()
 
+        # 4b. Phase2 规则新闻情绪
+        sentiment = self.analyze_sentiment()
+        self.current_sentiment = sentiment
+
         # 5. 集成输出（XGBoost 优先，GBM 降级兜底）
         active_model = "xgb" if xgb_results else ("gbm" if gbm_results else None)
         final_prediction = self._ensemble_output(
@@ -294,6 +308,7 @@ class EnsemblePredictor:
             xgb_results if xgb_results else gbm_results,
             tech_analysis,
             active_model=active_model,
+            sentiment=sentiment,
         )
 
         return {
@@ -303,6 +318,8 @@ class EnsemblePredictor:
             "gbm": gbm_results,
             "technical_analysis": tech_analysis,
             "macro_analysis": self.analyze_macro(),
+            "sentiment_analysis": sentiment,
+            "sentiment_score": sentiment.get("sentiment_score", 0.0),
             "current_price": self.current_price,
             "timestamp": datetime.now().isoformat(),
             "_xgb_passes_threshold": self.xgboost_passes_threshold,  # P1 debug
@@ -311,12 +328,45 @@ class EnsemblePredictor:
             "_ml_cv_auc": self._ml_cv_auc,  # P1: 各horizon CV AUC（已由上述逻辑填充）
         }
 
+    def analyze_sentiment(self) -> Dict:
+        """Phase 2：规则版新闻情绪（失败时中性 0）。"""
+        try:
+            from config import NEWS_SENTIMENT
+            if not NEWS_SENTIMENT.get("enabled", True):
+                return {
+                    "sentiment_score": 0.0,
+                    "sentiment_label": "DISABLED",
+                    "n_headlines": 0,
+                }
+            max_age = int(NEWS_SENTIMENT.get("cache_max_age_sec", 3600))
+            from data.news_sentiment import get_sentiment
+            result = get_sentiment(force_refresh=False, max_age_sec=max_age)
+            score = float(result.get("sentiment_score") or 0.0)
+            n = int(result.get("n_headlines") or 0)
+            min_n = int(NEWS_SENTIMENT.get("min_headlines", 3))
+            if n < min_n and result.get("sentiment_label") not in ("DISABLED",):
+                # 样本过少时降权为中性，避免噪声
+                result = dict(result)
+                result["sentiment_score"] = 0.0
+                result["sentiment_label"] = "TOO_FEW"
+                result["raw_score_before_gate"] = score
+            return result
+        except Exception as e:
+            logger.warning(f"[Ensemble] 新闻情绪失败: {e}")
+            return {
+                "sentiment_score": 0.0,
+                "sentiment_label": "ERROR",
+                "n_headlines": 0,
+                "error": str(e)[:120],
+            }
+
     def _ensemble_output(
         self,
         arima: Dict,
         ml_model: Dict,  # XGBoost 或 GBM（统一接口）
         technical: Dict,
         active_model: str = "xgb",  # "xgb" | "gbm"
+        sentiment: Optional[Dict] = None,
     ) -> Dict:
         """集成各模型输出（XGBoost 优先，GBM 降级兜底）"""
 
@@ -354,6 +404,14 @@ class EnsemblePredictor:
                 tech_prob = np.clip(tech_prob, 0.2, 0.8)
                 prob_up_list.append(tech_prob)
                 weights.append(self.MODEL_WEIGHTS["technical"])
+
+            # Phase2 新闻情绪（规则引擎）
+            sent_w = self.MODEL_WEIGHTS.get("sentiment", 0.0)
+            if sentiment and sent_w > 0:
+                s = float(sentiment.get("sentiment_score") or 0.0)
+                sent_prob = float(np.clip((s + 1) / 2, 0.2, 0.8))
+                prob_up_list.append(sent_prob)
+                weights.append(sent_w)
             
             # 加权平均
             if prob_up_list:

@@ -160,3 +160,15 @@ CROSS_ASSET_SYMBOLS = {
     "spy": "SPY",       # 标普 500 ETF
 }
 
+# === Phase 2：规则版新闻情绪 ===
+# 验收：连续 2 周记录 sentiment_score 与次日金价涨跌相关性 > 0.3 才保留
+NEWS_SENTIMENT = {
+    "enabled": True,
+    "weight": 0.12,           # ensemble 权重（原 macro 0.10 槽位）
+    "cache_max_age_sec": 3600,
+    "min_headlines": 3,
+    # 相关性观察：output/sentiment_history.jsonl
+    "correlation_window_days": 14,
+    "keep_threshold_corr": 0.30,
+}
+

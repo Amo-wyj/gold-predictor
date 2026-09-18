@@ -135,6 +135,27 @@
         </div>
     </div>
 
+    <!-- Phase2 新闻情绪 -->
+    <div class="card mb-6">
+        <h3 class="text-lg font-bold mb-4">📰 新闻情绪（规则版）</h3>
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <div class="text-center p-4 bg-slate-800 rounded-lg">
+                <div class="text-slate-400 text-sm">情绪分</div>
+                <div id="sent-score" class="text-2xl font-bold mt-2">--</div>
+                <div id="sent-label" class="text-sm text-slate-400">--</div>
+            </div>
+            <div class="text-center p-4 bg-slate-800 rounded-lg">
+                <div class="text-slate-400 text-sm">标题数</div>
+                <div id="sent-n" class="text-2xl font-bold mt-2">--</div>
+            </div>
+            <div class="md:col-span-2 p-4 bg-slate-800 rounded-lg">
+                <div class="text-slate-400 text-sm mb-2">命中关键词</div>
+                <div id="sent-matches" class="text-sm text-slate-200">--</div>
+                <div id="sent-titles" class="text-xs text-slate-400 mt-2 space-y-1"></div>
+            </div>
+        </div>
+    </div>
+
     <!-- 页脚 -->
     <footer class="text-center text-slate-500 text-sm mt-8">
         <p>更新时间: <span id="update-time">--</span></p>
@@ -173,6 +194,21 @@
                 // 技术指标也随 prediction 一起加载
                 if (data.technical) {
                     renderTechnicalCards(data.technical);
+                }
+
+                // Phase2 新闻情绪
+                if (data.sentiment) {
+                    const s = data.sentiment;
+                    const score = Number(s.score ?? data.sentiment_score ?? 0);
+                    const scoreEl = document.getElementById('sent-score');
+                    scoreEl.textContent = (score >= 0 ? '+' : '') + score.toFixed(3);
+                    scoreEl.className = 'text-2xl font-bold mt-2 ' + (score > 0.15 ? 'text-green-400' : (score < -0.15 ? 'text-red-400' : 'text-slate-200'));
+                    const labelMap = {BULLISH:'偏多', BEARISH:'偏空', NEUTRAL:'中性', NO_DATA:'无数据', TOO_FEW:'样本少', ERROR:'失败', DISABLED:'关闭'};
+                    document.getElementById('sent-label').textContent = labelMap[s.label] || s.label || '--';
+                    document.getElementById('sent-n').textContent = s.n_headlines ?? '--';
+                    document.getElementById('sent-matches').textContent = (s.top_matches || []).join('  ') || '--';
+                    const titles = document.getElementById('sent-titles');
+                    titles.innerHTML = (s.sample_titles || []).map(t => `<div>• ${t}</div>`).join('');
                 }
 
                 document.getElementById('update-time').textContent = new Date().toLocaleString('zh-CN');

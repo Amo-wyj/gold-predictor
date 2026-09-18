@@ -1,3 +1,7 @@
 *.pyc
 __pycache__/
 .DS_Store/
+output/
+data/news/*.jsonl
+*.parquet
+

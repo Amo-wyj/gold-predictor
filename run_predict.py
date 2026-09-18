@@ -149,6 +149,18 @@ def predict(use_mock=True, verbose=True):
                 elif isinstance(v, str):
                     print(f"    {k}: {v}")
 
+        # Phase2 新闻情绪
+        sa = result.get('sentiment_analysis') or {}
+        if sa:
+            print("\n📰 新闻情绪 (Phase2 规则版):")
+            print(f"    score: {sa.get('sentiment_score', 0):+.3f} ({sa.get('sentiment_label', '')})")
+            print(f"    headlines: {sa.get('n_headlines', 0)}")
+            tops = sa.get('top_matches') or []
+            if tops:
+                print(f"    matches: {', '.join(tops[:6])}")
+            for t in (sa.get('sample_titles') or [])[:3]:
+                print(f"    - {t}")
+
     return result
 
 

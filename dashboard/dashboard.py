@@ -39,6 +39,7 @@ prediction_history = []
 _latest_xgb_passes: bool = False   # P1: ML AUC 验证标记（白名单方案是否生效）
 _latest_ml_auc: Dict = {}          # P1: 各 horizon CV AUC（LightGBM/XGBoost）
 _latest_ml_model: str = "sklearn-GBClassifier"  # P1: 实际 ML 模型名
+_latest_sentiment: Dict = {}       # P2: 规则版新闻情绪
 
 import threading
 
@@ -291,6 +292,10 @@ def _ensure_prediction() -> dict:
                 raw_tech = prediction_result.get("technical_analysis", {})
                 latest_technical = _normalize_technical(raw_tech)
                 latest_price = float(prediction_result.get("current_price") or 0)
+                global _latest_sentiment
+                _latest_sentiment = prediction_result.get("sentiment_analysis") or {
+                    "sentiment_score": prediction_result.get("sentiment_score", 0.0)
+                }
                 debug["steps"].append("prediction_set")
                 # 写文件
                 try:
@@ -306,6 +311,8 @@ def _ensure_prediction() -> dict:
                             "_ml_cv_auc": _latest_ml_auc if '_latest_ml_auc' in dir() else prediction_result.get("_ml_cv_auc", {}),
                             "_ml_model": _latest_ml_model if '_latest_ml_model' in dir() else prediction_result.get("_ml_model", "unknown"),
                             "_xgb_passes": _latest_xgb_passes if '_latest_xgb_passes' in dir() else prediction_result.get("_xgb_passes_threshold", False),
+                            "sentiment_score": (_latest_sentiment or {}).get("sentiment_score", 0.0),
+                            "sentiment_analysis": _latest_sentiment or {},
                         }, f, indent=2, default=str)
                     debug["steps"].append("prediction_written")
                 except Exception as e_write:
@@ -419,11 +426,22 @@ def init_dashboard():
                 _latest_xgb_passes = prediction_result.get("_xgb_passes_threshold", False)
                 _latest_ml_auc = prediction_result.get("_ml_cv_auc", {})
                 _latest_ml_model = prediction_result.get("_ml_model", "sklearn-GBClassifier")
+                global _latest_sentiment
+                _latest_sentiment = prediction_result.get("sentiment_analysis") or {
+                    "sentiment_score": prediction_result.get("sentiment_score", 0.0)
+                }
                 # 也写入独立文件（供 api_predict 异步读取）
                 try:
                     os.makedirs(output_dir, exist_ok=True)
                     with open(f"{output_dir}/ml_result.json", "w") as f:
-                        json.dump({"_ml_cv_auc": _latest_ml_auc, "_ml_model": _latest_ml_model, "_xgb_passes": _latest_xgb_passes, "updated_at": datetime.now().isoformat()}, f)
+                        json.dump({
+                            "_ml_cv_auc": _latest_ml_auc,
+                            "_ml_model": _latest_ml_model,
+                            "_xgb_passes": _latest_xgb_passes,
+                            "sentiment_score": (_latest_sentiment or {}).get("sentiment_score", 0.0),
+                            "sentiment_analysis": _latest_sentiment or {},
+                            "updated_at": datetime.now().isoformat(),
+                        }, f)
                 except: pass
                 logger.info(f"[P1] {_latest_ml_model} AUC 验证: {_latest_xgb_passes} | CV AUC: {_latest_ml_auc}")
             else:
@@ -580,9 +598,40 @@ def api_predict():
     resp["_ml_model"] = _ml_model_s
     resp["_ml_cv_auc"] = _ml_auc_s
     resp["_xgb_passes_threshold"] = _ml_passes_s
+    # P2 新闻情绪
+    sent = _latest_sentiment or {}
+    if not sent:
+        try:
+            from data.news_sentiment import NewsSentimentAnalyzer
+            sent = NewsSentimentAnalyzer.load_cached() or {}
+        except Exception:
+            sent = {}
+    resp["sentiment_score"] = sent.get("sentiment_score", 0.0)
+    resp["sentiment"] = {
+        "score": sent.get("sentiment_score", 0.0),
+        "label": sent.get("sentiment_label", "NO_DATA"),
+        "n_headlines": sent.get("n_headlines", 0),
+        "top_matches": sent.get("top_matches", [])[:6],
+        "sample_titles": sent.get("sample_titles", [])[:3],
+        "updated_at": sent.get("updated_at"),
+    }
     if debug.get("errors"):
         resp["_debug"] = debug
     return jsonify(resp)
+
+
+@app.route("/api/sentiment")
+def api_sentiment():
+    """Phase2：规则版新闻情绪（可强制刷新）"""
+    force = request.args.get("refresh") in ("1", "true", "yes")
+    try:
+        from data.news_sentiment import get_sentiment
+        data = get_sentiment(force_refresh=force)
+        global _latest_sentiment
+        _latest_sentiment = data
+        return jsonify({"status": "success", **data})
+    except Exception as e:
+        return jsonify({"status": "error", "error": str(e)}), 500
 
 
 @app.route("/api/price")

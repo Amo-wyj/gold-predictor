@@ -1,0 +1,3 @@
+# news raw dumps (jsonl) are runtime artifacts
+*.jsonl
+!.gitkeep
