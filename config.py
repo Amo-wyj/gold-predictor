@@ -173,8 +173,10 @@ NEWS_SENTIMENT = {
 
 # === Phase 3：CFTC + 多时间框架 ===
 CFTC = {
-    "enabled": True,
-    "weight": 0.12,           # 周度大方向
+    # 2025-01-07 至 2026-09-08，87 个周报：Managed Money 净持仓周变化
+    # 与公布后 5 个交易日金价同向率 42.5%，低于 55% 保留线。不再进入 ensemble。
+    "enabled": False,
+    "weight": 0.0,
     "cache_max_age_hours": 24,
     "validation_min_weeks": 4,
     "validation_hit_rate": 0.55,

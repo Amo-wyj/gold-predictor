@@ -260,17 +260,15 @@ def evaluate_phase3_cftc(paths: Dict[str, Path], gold: pd.DataFrame) -> Dict:
     except Exception:
         min_points, hit_thr = 4, 0.55
 
-    cot_path = paths["cot_history"]
-    if not cot_path.exists():
-        return {
-            "phase": "phase3_cftc",
-            "verdict": "WAIT",
-            "reason": "尚无 cot_history.csv",
-            "n_samples": 0,
-            "required_samples": min_points,
-        }
-
-    cot = pd.read_csv(cot_path)
+    # 优先用收集器合并后的历史（含已提交种子），避免只看到当周一条
+    try:
+        from data.cftc_collector import CFTCCollector
+        hist_rows = CFTCCollector().merged_history()
+        cot = pd.DataFrame(hist_rows)
+    except Exception:
+        cot = pd.DataFrame()
+    if cot.empty and paths["cot_history"].exists():
+        cot = pd.read_csv(paths["cot_history"])
     if cot.empty or "report_date" not in cot.columns:
         return {
             "phase": "phase3_cftc",
@@ -291,18 +289,13 @@ def evaluate_phase3_cftc(paths: Dict[str, Path], gold: pd.DataFrame) -> Dict:
         if pd.isna(wow) or wow == 0:
             continue
         rd = pd.Timestamp(row["report_date"])
-        # 报告日后约 5 个交易日收益方向
-        # 找报告日及之后的交易日
-        idx = gold.index.searchsorted(rd)
+        # 报告日多为周二，公众约 3 天后（周五）才看得到。从公布日之后计 5 个交易日。
+        release = rd + pd.Timedelta(days=3)
+        idx = gold.index.searchsorted(release)
         if idx >= len(gold.index) - 5:
             continue
-        # 用报告日对应交易日的 ret_5d（若缺失则用 close[t+5]/close[t]-1）
-        t0 = gold.index[idx]
-        if idx + 5 < len(gold.index):
-            fwd = float(gold["close"].iloc[idx + 5] / gold["close"].iloc[idx] - 1)
-        else:
-            continue
-        agree = (wow > 0 and fwd > 0) or (wow < 0 and fwd < 0)
+        fwd = float(gold["close"].iloc[idx + 5] / gold["close"].iloc[idx] - 1)
+        agree = bool((wow > 0 and fwd > 0) or (wow < 0 and fwd < 0))
         total += 1
         hits += int(agree)
         details.append({
@@ -422,7 +415,7 @@ def evaluate_phase3_timeframe(paths: Dict[str, Path], gold: pd.DataFrame) -> Dic
 
 
 def build_report(paths: Dict[str, Path]) -> Dict:
-    gold = fetch_gold_daily(days=180)
+    gold = fetch_gold_daily(days=520)
     p2 = evaluate_phase2(paths, gold)
     p3c = evaluate_phase3_cftc(paths, gold)
     p3t = evaluate_phase3_timeframe(paths, gold)

@@ -29,7 +29,7 @@ class EnsemblePredictor:
         "gbm": 0.00,
         "technical": 0.10,
         "sentiment": 0.10,  # P2
-        "cftc": 0.12,       # P3 周度持仓
+        "cftc": 0.00,       # 回测同向率不足，权重由 config 关闭
         "timeframe": 0.05,  # P3 4h 共振
         "macro": 0.00,
     }
@@ -62,7 +62,9 @@ class EnsemblePredictor:
             self.MODEL_WEIGHTS = dict(self.MODEL_WEIGHTS)
             if NEWS_SENTIMENT.get("enabled") and NEWS_SENTIMENT.get("weight") is not None:
                 self.MODEL_WEIGHTS["sentiment"] = float(NEWS_SENTIMENT["weight"])
-            if CFTC.get("enabled") and CFTC.get("weight") is not None:
+            if not CFTC.get("enabled", True):
+                self.MODEL_WEIGHTS["cftc"] = 0.0
+            elif CFTC.get("weight") is not None:
                 self.MODEL_WEIGHTS["cftc"] = float(CFTC["weight"])
             if TIMEFRAME.get("enabled") and TIMEFRAME.get("weight") is not None:
                 self.MODEL_WEIGHTS["timeframe"] = float(TIMEFRAME["weight"])

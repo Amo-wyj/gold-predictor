@@ -88,14 +88,30 @@ class CFTCCollector:
             logger.warning(f"[CFTC] 拉取失败: {e}")
             return None
 
-    def _load_history(self) -> list:
-        if not os.path.exists(self.history_path):
+    def _seed_path(self) -> str:
+        return os.path.join(self.data_dir, "cot_history_seed.csv")
+
+    def _read_csv(self, path: str) -> list:
+        if not path or not os.path.exists(path):
             return []
         rows = []
-        with open(self.history_path, newline="", encoding="utf-8") as f:
+        with open(path, newline="", encoding="utf-8") as f:
             for r in csv.DictReader(f):
-                rows.append(r)
+                if r.get("report_date"):
+                    rows.append(r)
         return rows
+
+    def _load_history(self) -> list:
+        """种子（已提交的历史周报）+ 本地追加，同日以本地为准。"""
+        by_date = {}
+        for row in self._read_csv(self._seed_path()):
+            by_date[row["report_date"]] = row
+        for row in self._read_csv(self.history_path):
+            by_date[row["report_date"]] = row
+        return [by_date[k] for k in sorted(by_date)]
+
+    def merged_history(self) -> list:
+        return self._load_history()
 
     def _append_history(self, row: Dict) -> None:
         fieldnames = [
