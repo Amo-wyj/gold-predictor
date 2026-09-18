@@ -168,23 +168,42 @@ if __name__ == "__main__":
         import sys as _sys
         _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
         from models.ensemble import EnsemblePredictor
-        from data.yahoo_collector import GoldYFinance
+        from models.xgboost_model import GoldXGBoost
+        from data.yahoo_collector import YahooFinanceCollector
         from data.fred_collector import FREDCollector
-        from features.feature_engineering import FeatureEngine
+        from config import OUTPUT_DIR
         import json as _json
         print("开始 ML 训练（--ml-only）...")
-        gold_df = GoldYFinance().fetch(days=500)
-        macro_data = FREDCollector().fetch_all()
-        fe = FeatureEngine()
-        features = fe.build_features(gold_df, macro_data)
+        collector = YahooFinanceCollector()
+        gold_symbol = collector.tickers.get("gold", "GC=F")
+        gold_df = collector.fetch(gold_symbol, days=500)
+        if gold_df is None or gold_df.empty:
+            print("ERROR: 无法获取黄金行情，ML 训练中止")
+            _sys.exit(1)
+        macro_data = None
+        try:
+            fetched = FREDCollector().fetch_all()
+            if fetched is not None and not getattr(fetched, "empty", True):
+                macro_data = fetched
+        except Exception as e:
+            print(f"FRED 跳过: {e}")
         ensemble = EnsemblePredictor()
-        ensemble.update_data(gold_df, macro_data)
-        meta = ensemble.xgboost_model.fit(ensemble.current_features, gold_df['close'])
-        os.makedirs("/opt/gold-predictor/output", exist_ok=True)
-        with open("/opt/gold-predictor/output/ml_result.json", "w") as f:
+        if not ensemble.update_data(gold_df, macro_data):
+            print("ERROR: 特征构建失败")
+            _sys.exit(1)
+        ensemble.xgboost_model = GoldXGBoost()
+        meta = ensemble.xgboost_model.fit(ensemble.current_features, prices=gold_df["close"]) or {}
+        ensemble.xgboost_passes_threshold = bool(getattr(ensemble.xgboost_model, "_passes_threshold", False))
+        cv = meta.get("cv_results") or {}
+        ensemble._ml_cv_auc = {
+            str(k): round(v.get("mean_auc", 0), 3) if isinstance(v, dict) else round(float(v), 3)
+            for k, v in cv.items()
+        }
+        os.makedirs(OUTPUT_DIR, exist_ok=True)
+        with open(os.path.join(OUTPUT_DIR, "ml_result.json"), "w") as f:
             _json.dump({
                 "_ml_cv_auc": ensemble._ml_cv_auc,
-                "_ml_model": ensemble.xgboost_model.meta_info.get("model_name", "sklearn-GBClassifier"),
+                "_ml_model": ensemble.xgboost_model.model_name,
                 "_xgb_passes": ensemble.xgboost_passes_threshold,
                 "updated_at": datetime.now().isoformat()
             }, f)

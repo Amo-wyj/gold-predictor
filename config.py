@@ -3,10 +3,14 @@
 """
 
 # === 路径配置 ===
-BASE_DIR = "/opt/gold-predictor"  # Render 部署路径
+import os as _os
+# Render 实际代码在 /opt/render/project/src；旧文档路径 /opt/gold-predictor 可能不存在
+_PROJECT_ROOT = _os.path.dirname(_os.path.abspath(__file__))
+BASE_DIR = "/opt/gold-predictor" if _os.path.isdir("/opt/gold-predictor") else _PROJECT_ROOT
 DATA_DIR = f"{BASE_DIR}/data"
 MODELS_DIR = f"{BASE_DIR}/models"
 FEATURES_DIR = f"{BASE_DIR}/features"
+OUTPUT_DIR = _os.environ.get("GOLD_OUTPUT_DIR") or f"{BASE_DIR}/output"
 
 # === 数据源配置 ===
 DATA_SOURCES = {

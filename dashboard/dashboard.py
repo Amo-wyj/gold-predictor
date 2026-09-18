@@ -21,6 +21,13 @@ from flask_cors import CORS
 
 logger = logging.getLogger(__name__)
 
+try:
+    from config import OUTPUT_DIR, BASE_DIR
+except Exception:
+    BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    OUTPUT_DIR = os.path.join(BASE_DIR, "output")
+
+
 app = Flask(__name__)
 CORS(app)
 
@@ -189,7 +196,7 @@ def _ensure_prediction() -> dict:
             return debug
 
         # 1) 尝试加载文件
-        output_dir = "/opt/gold-predictor/output"
+        output_dir = OUTPUT_DIR
         if os.path.exists(output_dir):
             try:
                 files = [f for f in os.listdir(output_dir) if f.startswith("prediction_")]
@@ -210,7 +217,7 @@ def _ensure_prediction() -> dict:
                             debug["steps"].append(f"loaded_from_file:{latest_file}")
                             _prediction_initialized = True
                             # P1 Fix: 从文件加载后，也要读 ml_result.json（后台线程可能已完成）
-                            _ml_file = "/opt/gold-predictor/output/ml_result.json"
+                            _ml_file = os.path.join(OUTPUT_DIR, "ml_result.json")
                             if os.path.exists(_ml_file):
                                 try:
                                     with open(_ml_file) as f:
@@ -225,7 +232,7 @@ def _ensure_prediction() -> dict:
                             import threading
                             def _bg_ml_train():
                                 try:
-                                    sys.path.insert(0, "/opt/gold-predictor")
+                                    sys.path.insert(0, BASE_DIR)
                                     from data.yahoo_collector import YahooFinanceCollector
                                     from features.feature_engineering import FeatureEngine
                                     from models.xgboost_model import GoldXGBoost
@@ -245,8 +252,8 @@ def _ensure_prediction() -> dict:
                                     # 写独立的 ML 结果文件（api_predict 会异步读取）
                                     ml_out = {"_ml_cv_auc": _latest_ml_auc, "_ml_model": _latest_ml_model, "_xgb_passes": _latest_xgb_passes, "updated_at": datetime.now().isoformat()}
                                     try:
-                                        os.makedirs("/opt/gold-predictor/output", exist_ok=True)
-                                        with open("/opt/gold-predictor/output/ml_result.json", "w") as f:
+                                        os.makedirs(OUTPUT_DIR, exist_ok=True)
+                                        with open(os.path.join(OUTPUT_DIR, "ml_result.json"), "w") as f:
                                             json.dump(ml_out, f)
                                     except: pass
                                     logger.info(f"[P1 BG] ML训练完成并写入文件: {_latest_ml_model} AUC={_latest_ml_auc}")
@@ -343,7 +350,7 @@ def init_dashboard():
     global latest_prediction, latest_technical, latest_price
 
     # 1) 尝试加载最新预测结果文件
-    output_dir = "/opt/gold-predictor/output"
+    output_dir = OUTPUT_DIR
     loaded_from_file = False
     if os.path.exists(output_dir):
         files = [f for f in os.listdir(output_dir) if f.startswith("prediction_")]
@@ -499,7 +506,7 @@ def api_predict():
         "_xgb_passes_threshold": _latest_xgb_passes,   # P1: ML是否通过AUC验证
     }
     # ── 获取 ML 结果（优先读缓存文件；缺失则同步触发训练）──
-    ml_file = "/opt/gold-predictor/output/ml_result.json"
+    ml_file = os.path.join(OUTPUT_DIR, "ml_result.json")
     _ml_auc_s, _ml_model_s, _ml_passes_s = _latest_ml_auc, _latest_ml_model, _latest_xgb_passes
     if os.path.exists(ml_file):
         try:
@@ -516,7 +523,7 @@ def api_predict():
         try:
             import subprocess as _sp
             r = _sp.run(
-                ["python3", "/opt/render/project/src/run_predict.py", "--ml-only"],
+                ["python3", os.path.join(BASE_DIR, "run_predict.py"), "--ml-only"],
                 capture_output=True, text=True, timeout=90
             )
             logger.info(f"[api_predict] 同步ML stderr: {r.stderr[-200:]}")
@@ -901,6 +908,8 @@ def api_debug_features():
         tier2 = [(c, s) for c, s in ranked[8:15] if s >= 0.25]
         tier3 = [(c, s) for c, s in ranked[15:25]]
 
+        n_features = len(feature_cols)
+
         return jsonify({
             "status": "ok",
             "n_total_features": n_features,
@@ -932,12 +941,6 @@ def api_debug_features():
         return jsonify({"error": str(e), "trace": traceback.format_exc()[-500:]}), 500
 
 
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
-    run_server()
-
-
-
 @app.route("/api/diag/modules")
 def api_diag_modules():
     """🔍 直接测试各模块是否可导入（绕过runpy.run_path）"""
@@ -964,7 +967,7 @@ def api_diag_modules():
     
     # 2. 测试项目模块
     try:
-        sys.path.insert(0, "/opt/gold-predictor")
+        sys.path.insert(0, BASE_DIR)
         from features.feature_engineering import FeatureEngine
         results["FeatureEngine"] = "✅ 可导入"
     except Exception as e:
@@ -988,9 +991,19 @@ def api_diag_modules():
     # 4. 测试 FRED
     try:
         import requests
+        fred_key = os.getenv("FRED_API_KEY") or ""
+        if not fred_key:
+            try:
+                from config import DATA_SOURCES
+                fred_key = DATA_SOURCES.get("fred", {}).get("api_key", "")
+            except Exception:
+                fred_key = ""
+        if not fred_key or fred_key.startswith("YOUR_"):
+            results["FRED"] = "⚠️ 未配置 FRED_API_KEY"
+            return jsonify(results)
         r = requests.get(
             "https://api.stlouisfed.org/fred/series/observations",
-            params={"series_id": "DGS10", "api_key": "b174af24d93f1ca58902ee7b4b4a1935",
+            params={"series_id": "DGS10", "api_key": fred_key,
                     "file_type": "json", "limit": 5}, timeout=10
         )
         if r.status_code == 200:
@@ -1009,7 +1022,7 @@ def api_diag():
     诊断端点：读取 init_dashboard() 保存的预测缓存，快速暴露 ML 训练详情。
     避免重新训练（>3分钟会超时）。
     """
-    output_dir = "/opt/gold-predictor/output"
+    output_dir = OUTPUT_DIR
     try:
         if os.path.exists(output_dir):
             files = sorted([f for f in os.listdir(output_dir) if f.startswith("prediction_")])
@@ -1030,3 +1043,6 @@ def api_diag():
         return jsonify({"error": str(e)}), 500
 
 
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
+    run_server()
