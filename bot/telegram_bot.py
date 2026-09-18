@@ -346,45 +346,28 @@ class AlertEngine:
         return alerts
     
     def check_macro_events(self, days_ahead: int = 3) -> List[Dict]:
-        """检查重大财经事件"""
-        # 预定义财经日历（可扩展为 API 获取）
-        events = {
-            "fomc_meeting": {
-                "name": "美联储FOMC会议",
-                "impact": "🔴 高",
-                "preparation": "会议前1-2天黄金可能震荡，会后若维持利率或降息，金价通常上涨"
-            },
-            "nonfarm_payroll": {
-                "name": "非农就业报告",
-                "impact": "🔴 高",
-                "preparation": "数据好于预期→美元涨→金价跌；差于预期→反向"
-            },
-            "cpi_release": {
-                "name": "美国CPI数据",
-                "impact": "🟠 中高",
-                "preparation": "通胀高于预期→实际利率下降→金价上涨"
-            },
-            "pce_release": {
-                "name": "美国PCE物价指数",
-                "impact": "🟠 中",
-                "preparation": "美联储最关注的通胀指标，影响降息预期"
-            },
-            "gdp_release": {
-                "name": "美国GDP数据",
-                "impact": "🟡 中",
-                "preparation": "GDP强→可能收紧政策→金价承压"
-            },
-            "speech_powell": {
-                "name": "鲍威尔讲话",
-                "impact": "🟠 中高",
-                "preparation": "关注货币政策指引，鸽派发言→金价上涨"
-            },
-        }
-        
-        # 简化版：按固定周期模拟（实际应接财经日历API）
-        alerts = []
-        return alerts  # 暂时返回空，后续接入真实日历API
-    
+        """检查重大财经事件（真实日历）"""
+        try:
+            from data.macro_calendar import get_calendar
+            cal = get_calendar(days_ahead=max(days_ahead, 7), force_refresh=False)
+            alerts = []
+            for ev in cal.get("events") or []:
+                # 只预警 days_ahead 内
+                if float(ev.get("days_until") or 99) > days_ahead:
+                    continue
+                alerts.append({
+                    "event_name": ev.get("event_name") or ev.get("title_raw"),
+                    "event_date": ev.get("event_date"),
+                    "impact": ev.get("impact"),
+                    "preparation": ev.get("preparation"),
+                    "event_type": ev.get("event_type"),
+                    "forecast": ev.get("forecast"),
+                    "previous": ev.get("previous"),
+                })
+            return alerts
+        except Exception as e:
+            logger.warning(f"check_macro_events failed: {e}")
+            return []    
     def process_and_alert(self, current_price: float, prediction: Dict = None,
                          timestamp: datetime = None) -> List[Dict]:
         """处理所有预警检查并发送通知"""

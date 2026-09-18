@@ -156,6 +156,61 @@ def _normalize_technical(raw: dict) -> dict:
     return out
 
 
+def _live_gold_price() -> Optional[float]:
+    """快速取实时金价；失败返回 None。"""
+    try:
+        import yfinance as yf
+        hist = yf.Ticker("GC=F").history(period="5d", auto_adjust=True)
+        if hist is not None and not hist.empty:
+            return float(hist["Close"].iloc[-1])
+    except Exception as e:
+        logger.warning(f"live gold price failed: {e}")
+    return None
+
+
+def _prediction_cache_usable(data: dict, file_path: str) -> bool:
+    """
+    拒绝明显过期/模拟缓存：
+    - 金价低于 3000（2024 后现货远高于此，旧 mock≈2088）
+    - 文件超过 6 小时
+    """
+    try:
+        price = float(data.get("current_price") or 0)
+    except Exception:
+        return False
+    if price < 3000:
+        logger.warning(f"拒绝低价缓存 ${price:.2f}（疑似 mock）: {file_path}")
+        return False
+    try:
+        age_h = (datetime.now().timestamp() - os.path.getmtime(file_path)) / 3600.0
+        if age_h > 6:
+            logger.warning(f"拒绝过期缓存 {age_h:.1f}h: {file_path}")
+            return False
+    except Exception:
+        pass
+    return True
+
+
+def _rescale_prediction_prices(prediction: dict, old_price: float, new_price: float) -> dict:
+    """缓存可用但价格漂移时，按比例重标定预测价。"""
+    if not prediction or not old_price or old_price <= 0 or not new_price:
+        return prediction
+    out = {}
+    for k, v in prediction.items():
+        if not isinstance(v, dict):
+            out[k] = v
+            continue
+        node = dict(v)
+        if "predicted_price" in node:
+            try:
+                node["predicted_price"] = float(node["predicted_price"]) / old_price * new_price
+                node["price_change_pct"] = (node["predicted_price"] / new_price - 1) * 100
+            except Exception:
+                pass
+        out[k] = node
+    return out
+
+
 def _build_mock_prediction(price_seed: float = 0.0) -> Dict:
     """生成一份纯 mock 预测结果，保证 dashboard 永远有东西显示"""
     import numpy as np
@@ -187,49 +242,57 @@ def _ensure_prediction() -> dict:
     global latest_prediction, latest_technical, latest_price, _prediction_initialized, _latest_xgb_passes, _latest_ml_auc, _latest_ml_model
     debug = {"steps": [], "errors": []}
 
+    # 内存里若是旧 mock 价，强制重新拉
     if _prediction_initialized and latest_prediction and latest_price is not None:
-        debug["steps"].append("already_initialized")
-        return debug
+        if float(latest_price) >= 3000:
+            debug["steps"].append("already_initialized")
+            return debug
+        debug["steps"].append("invalidate_memory_mock_price")
+        _prediction_initialized = False
 
     with _prediction_lock:
-        if _prediction_initialized and latest_prediction and latest_price is not None:
+        if _prediction_initialized and latest_prediction and latest_price is not None and float(latest_price) >= 3000:
             debug["steps"].append("locked_already_initialized")
             return debug
 
-        # 1) 尝试加载文件
+        # 1) 尝试加载文件（拒绝 mock/过期）
         output_dir = OUTPUT_DIR
         if os.path.exists(output_dir):
             try:
                 files = [f for f in os.listdir(output_dir) if f.startswith("prediction_")]
                 if files:
                     latest_file = sorted(files)[-1]
-                    with open(os.path.join(output_dir, latest_file)) as f:
+                    fpath = os.path.join(output_dir, latest_file)
+                    with open(fpath) as f:
                         data = json.load(f)
-                        if data.get("prediction") and data.get("current_price"):
+                    if data.get("prediction") and data.get("current_price") and _prediction_cache_usable(data, fpath):
                             latest_prediction = data["prediction"]
                             raw_tech = data.get("technical_analysis", {})
                             latest_technical = _normalize_technical(raw_tech)
                             latest_price = float(data["current_price"])
-                            # P1 Fix: 从文件恢复 ML 训练结果
-                            # (重复 global 已删除)
+                            # 用实时价校正展示（若漂移不大）
+                            live = _live_gold_price()
+                            if live and abs(live - latest_price) / latest_price > 0.01:
+                                latest_prediction = _rescale_prediction_prices(
+                                    latest_prediction, latest_price, live
+                                )
+                                latest_price = live
+                                debug["steps"].append(f"rescaled_to_live:{live:.2f}")
                             _latest_ml_auc = data.get("_ml_cv_auc", {})
                             _latest_ml_model = data.get("_ml_model", "sklearn-GBClassifier")
                             _latest_xgb_passes = data.get("_xgb_passes", False)
                             debug["steps"].append(f"loaded_from_file:{latest_file}")
                             _prediction_initialized = True
-                            # P1 Fix: 从文件加载后，也要读 ml_result.json（后台线程可能已完成）
                             _ml_file = os.path.join(OUTPUT_DIR, "ml_result.json")
                             if os.path.exists(_ml_file):
                                 try:
                                     with open(_ml_file) as f:
                                         ml_data = json.load(f)
-                                        # (重复 global 已删除)
                                         _latest_ml_auc = ml_data.get("_ml_cv_auc", {})
                                         _latest_ml_model = ml_data.get("_ml_model", "sklearn-GBClassifier")
                                         _latest_xgb_passes = ml_data.get("_xgb_passes", False)
                                         logger.info(f"[_ensure] 从ml_result.json恢复: {_latest_ml_model} AUC={_latest_ml_auc}")
                                 except: pass
-                            # P1 Fix: 从文件加载后，触发异步 ML 训练（不阻塞返回）
                             import threading
                             def _bg_ml_train():
                                 try:
@@ -245,12 +308,9 @@ def _ensure_prediction() -> dict:
                                     prices = gold_df["close"]
                                     model = GoldXGBoost()
                                     meta = model.fit(features, prices=prices)
-                                    # 更新全局变量
-                                    # (重复 global 已删除)
                                     _latest_ml_auc = meta.get("cv_results", {}) if meta else {}
                                     _latest_ml_model = model.model_name
                                     _latest_xgb_passes = model._passes_threshold
-                                    # 写独立的 ML 结果文件（api_predict 会异步读取）
                                     ml_out = {"_ml_cv_auc": _latest_ml_auc, "_ml_model": _latest_ml_model, "_xgb_passes": _latest_xgb_passes, "updated_at": datetime.now().isoformat()}
                                     try:
                                         os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -262,6 +322,8 @@ def _ensure_prediction() -> dict:
                                     logger.warning(f"[P1 BG] ML训练失败: {e}")
                             threading.Thread(target=_bg_ml_train, daemon=True).start()
                             return debug
+                    else:
+                        debug["steps"].append(f"skipped_bad_cache:{latest_file}")
             except Exception as e:
                 debug["errors"].append(f"file_load_error: {e}")
 
@@ -281,9 +343,23 @@ def _ensure_prediction() -> dict:
                 debug["steps"].append("predict_real_ok")
             except Exception as e_real:
                 debug["errors"].append(f"predict_real_failed: {e_real}")
+                # 真实失败时：至少用实时价 + 轻量 mock，而不是 2088 假数据
+                live = _live_gold_price()
+                if live:
+                    latest_price = live
+                    debug["steps"].append(f"live_price_only:{live:.2f}")
                 try:
                     prediction_result = predict_fn(use_mock=True)
                     debug["steps"].append("predict_mock_ok")
+                    # 若 mock 成功但价太低，用实时价重标定
+                    if prediction_result and live:
+                        old_p = float(prediction_result.get("current_price") or 0)
+                        if old_p and old_p < 3000:
+                            prediction_result["prediction"] = _rescale_prediction_prices(
+                                prediction_result.get("prediction") or {}, old_p, live
+                            )
+                            prediction_result["current_price"] = live
+                            debug["steps"].append("mock_rescaled_to_live")
                 except Exception as e_mock:
                     debug["errors"].append(f"predict_mock_failed: {e_mock}")
 
@@ -291,7 +367,7 @@ def _ensure_prediction() -> dict:
                 latest_prediction = prediction_result["prediction"]
                 raw_tech = prediction_result.get("technical_analysis", {})
                 latest_technical = _normalize_technical(raw_tech)
-                latest_price = float(prediction_result.get("current_price") or 0)
+                latest_price = float(prediction_result.get("current_price") or latest_price or 0)
                 global _latest_sentiment
                 _latest_sentiment = prediction_result.get("sentiment_analysis") or {
                     "sentiment_score": prediction_result.get("sentiment_score", 0.0)
@@ -307,12 +383,13 @@ def _ensure_prediction() -> dict:
                             "current_price": latest_price,
                             "prediction": latest_prediction,
                             "technical_analysis": raw_tech,
-                            # P1 Fix: 保存 ML 训练结果
-                            "_ml_cv_auc": _latest_ml_auc if '_latest_ml_auc' in dir() else prediction_result.get("_ml_cv_auc", {}),
-                            "_ml_model": _latest_ml_model if '_latest_ml_model' in dir() else prediction_result.get("_ml_model", "unknown"),
-                            "_xgb_passes": _latest_xgb_passes if '_latest_xgb_passes' in dir() else prediction_result.get("_xgb_passes_threshold", False),
+                            "_ml_cv_auc": prediction_result.get("_ml_cv_auc", _latest_ml_auc),
+                            "_ml_model": prediction_result.get("_ml_model", _latest_ml_model),
+                            "_xgb_passes": prediction_result.get("_xgb_passes_threshold", _latest_xgb_passes),
                             "sentiment_score": (_latest_sentiment or {}).get("sentiment_score", 0.0),
                             "sentiment_analysis": _latest_sentiment or {},
+                            "cftc_analysis": prediction_result.get("cftc_analysis"),
+                            "timeframe_analysis": prediction_result.get("timeframe_analysis"),
                         }, f, indent=2, default=str)
                     debug["steps"].append("prediction_written")
                 except Exception as e_write:
@@ -325,23 +402,43 @@ def _ensure_prediction() -> dict:
         _saved_ml_model = _latest_ml_model if '_latest_ml_model' in dir() else "sklearn-GBClassifier"
         _saved_xgb_passes = _latest_xgb_passes if '_latest_xgb_passes' in dir() else False
 
-        # 4) 兜底 mock
-        if not latest_prediction or latest_price is None:
-            seed_price = float(latest_price) if latest_price else 2000.0
-            latest_prediction = _build_mock_prediction(seed_price)
-            if latest_price is None:
+        # 4) 兜底：优先实时价，不再写死 2000
+        if not latest_prediction or latest_price is None or float(latest_price) < 3000:
+            live = _live_gold_price()
+            seed_price = float(live or latest_price or 4400.0)
+            # 若已有预测结构但价假，只重标定
+            if latest_prediction and isinstance(latest_prediction, dict) and latest_price and float(latest_price) < 3000 and live:
+                latest_prediction = _rescale_prediction_prices(latest_prediction, float(latest_price), live)
+                latest_price = live
+                debug["steps"].append("fallback_rescale_only")
+            else:
                 latest_price = seed_price
-            # mock 也填充 technical
-            import numpy as np
-            rng = np.random.default_rng(int(seed_price) % 99991)
-            latest_technical = {
-                "RSI":  {"value": float(rng.uniform(40, 65)), "signal": "中性"},
-                "MACD": {"value": float(rng.uniform(-3, 3)),  "signal": "看跌" if rng.uniform() < 0.5 else "看涨"},
-                "Bollinger": {"value": float(rng.uniform(0.3, 0.7)), "signal": "中轨"},
-                "ADX":  {"value": float(rng.uniform(15, 35)),  "signal": "偏弱"},
-            }
-            debug["steps"].append("fallback_mock")
-            # 用真实 ML 字段覆盖 mock 字段
+                # 生成与 api 结构一致的 horizon_* 预测，避免前端空白
+                latest_prediction = {
+                    "horizon_1d": {
+                        "probability_up": 0.5, "probability_down": 0.5,
+                        "confidence": 0.5, "signal": "NEUTRAL", "confidence_label": "LOW",
+                        "predicted_price": seed_price, "price_change_pct": 0.0,
+                    },
+                    "horizon_3d": {
+                        "probability_up": 0.5, "probability_down": 0.5,
+                        "confidence": 0.5, "signal": "NEUTRAL", "confidence_label": "LOW",
+                        "predicted_price": seed_price, "price_change_pct": 0.0,
+                    },
+                    "horizon_5d": {
+                        "probability_up": 0.5, "probability_down": 0.5,
+                        "confidence": 0.5, "signal": "NEUTRAL", "confidence_label": "LOW",
+                        "predicted_price": seed_price, "price_change_pct": 0.0,
+                    },
+                }
+                if not latest_technical:
+                    latest_technical = {
+                        "RSI": {"value": 50.0, "signal": "中性"},
+                        "MACD": {"value": 0.0, "signal": "中性"},
+                        "Bollinger": {"value": 0.5, "signal": "中性"},
+                        "ADX": {"value": 20.0, "signal": "震荡"},
+                    }
+                debug["steps"].append("fallback_live_neutral")
             if _saved_ml_auc:
                 _latest_ml_auc = _saved_ml_auc
                 _latest_ml_model = _saved_ml_model
@@ -350,7 +447,6 @@ def _ensure_prediction() -> dict:
 
         _prediction_initialized = True
         return debug
-
 
 def init_dashboard():
     """初始化 Dashboard"""
@@ -726,6 +822,36 @@ def api_validation():
             "error": str(e),
             "trace": traceback.format_exc()[-500:],
         }), 500
+
+
+@app.route("/api/calendar")
+def api_calendar():
+    """财经日历（美国高影响事件）"""
+    days = int(request.args.get("days", 7))
+    force = request.args.get("refresh") in ("1", "true", "yes")
+    try:
+        from data.macro_calendar import get_calendar
+        data = get_calendar(days_ahead=days, force_refresh=force)
+        return jsonify({"status": "success", **data})
+    except Exception as e:
+        return jsonify({"status": "error", "error": str(e)}), 500
+
+
+@app.route("/api/admin/refresh_predict")
+def api_admin_refresh_predict():
+    """强制清除内存缓存并重跑真实预测（用于清掉 mock 2088）"""
+    global latest_prediction, latest_price, latest_technical, _prediction_initialized
+    _prediction_initialized = False
+    latest_prediction = {}
+    latest_price = None
+    latest_technical = {}
+    debug = _ensure_prediction()
+    return jsonify({
+        "status": "success",
+        "price": latest_price,
+        "steps": debug.get("steps"),
+        "errors": debug.get("errors"),
+    })
 
 
 @app.route("/api/price")
