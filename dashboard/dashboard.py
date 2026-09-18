@@ -505,40 +505,81 @@ def api_predict():
         "timestamp": datetime.now().isoformat(),
         "_xgb_passes_threshold": _latest_xgb_passes,   # P1: ML是否通过AUC验证
     }
-    # ── 获取 ML 结果（优先读缓存文件；缺失则同步触发训练）──
+    # ── 获取 ML 结果：内存 → ml_result.json → 最新 prediction_*.json → 同步训练 ──
     ml_file = os.path.join(OUTPUT_DIR, "ml_result.json")
     _ml_auc_s, _ml_model_s, _ml_passes_s = _latest_ml_auc, _latest_ml_model, _latest_xgb_passes
-    if os.path.exists(ml_file):
+
+    def _load_ml_fields(data: dict):
+        auc = (data or {}).get("_ml_cv_auc") or {}
+        model = (data or {}).get("_ml_model")
+        passes = (data or {}).get("_xgb_passes")
+        return auc, model, passes
+
+    if (not _ml_auc_s) and os.path.exists(ml_file):
         try:
             with open(ml_file) as f:
-                ml_data = json.load(f)
-                _ml_auc_s = ml_data.get("_ml_cv_auc", _ml_auc_s)
-                _ml_model_s = ml_data.get("_ml_model", _ml_model_s)
-                _ml_passes_s = ml_data.get("_xgb_passes", _ml_passes_s)
-                logger.info(f"[api_predict] ml_file: {_ml_model_s} AUC={_ml_auc_s}")
-        except: pass
-    # 文件缺失（BG未完成）：同步调用预测管道获取真实ML AUC
+                auc, model, passes = _load_ml_fields(json.load(f))
+            if auc:
+                _ml_auc_s = auc
+            if model:
+                _ml_model_s = model
+            if passes is not None:
+                _ml_passes_s = bool(passes)
+            logger.info(f"[api_predict] ml_file: {_ml_model_s} AUC={_ml_auc_s}")
+        except Exception:
+            pass
+
+    # 训练结果常写在 prediction_*.json（api_diag 能读到），predict 也要回读
+    if (not _ml_auc_s) and os.path.isdir(OUTPUT_DIR):
+        try:
+            files = sorted(
+                f for f in os.listdir(OUTPUT_DIR)
+                if f.startswith("prediction_") and f.endswith(".json")
+            )
+            if files:
+                with open(os.path.join(OUTPUT_DIR, files[-1])) as f:
+                    auc, model, passes = _load_ml_fields(json.load(f))
+                if auc:
+                    _ml_auc_s = auc
+                if model:
+                    _ml_model_s = model
+                if passes is not None:
+                    _ml_passes_s = bool(passes)
+                logger.info(f"[api_predict] prediction_file={files[-1]} AUC={_ml_auc_s}")
+        except Exception:
+            pass
+
+    # 仍缺失：同步触发 ML 训练兜底
     if not _ml_auc_s:
-        logger.warning("[api_predict] ml_result.json 缺失，同步运行预测管道...")
+        logger.warning("[api_predict] ML AUC 缺失，同步运行 --ml-only...")
         try:
             import subprocess as _sp
             r = _sp.run(
                 ["python3", os.path.join(BASE_DIR, "run_predict.py"), "--ml-only"],
                 capture_output=True, text=True, timeout=90
             )
-            logger.info(f"[api_predict] 同步ML stderr: {r.stderr[-200:]}")
+            logger.info(f"[api_predict] 同步ML stderr: {(r.stderr or '')[-200:]}")
             if r.returncode == 0 and os.path.exists(ml_file):
                 with open(ml_file) as f:
-                    ml_data = json.load(f)
-                    _ml_auc_s = ml_data.get("_ml_cv_auc", _ml_auc_s)
-                    _ml_model_s = ml_data.get("_ml_model", _ml_model_s)
-                    _ml_passes_s = ml_data.get("_xgb_passes", _ml_passes_s)
+                    auc, model, passes = _load_ml_fields(json.load(f))
+                if auc:
+                    _ml_auc_s = auc
+                if model:
+                    _ml_model_s = model
+                if passes is not None:
+                    _ml_passes_s = bool(passes)
         except Exception as e:
             logger.warning(f"[api_predict] 同步ML失败: {e}")
 
-    resp["_ml_model"] = _ml_model_s                   # P1: 实际ML模型
-    resp["_ml_cv_auc"] = _ml_auc_s                    # P1: 各horizon CV AUC
-    # 仅在有错误时保留调试信息
+    # 回写全局缓存，避免下次仍读到空值
+    if _ml_auc_s:
+        _latest_ml_auc = _ml_auc_s
+        _latest_ml_model = _ml_model_s
+        _latest_xgb_passes = _ml_passes_s
+
+    resp["_ml_model"] = _ml_model_s
+    resp["_ml_cv_auc"] = _ml_auc_s
+    resp["_xgb_passes_threshold"] = _ml_passes_s
     if debug.get("errors"):
         resp["_debug"] = debug
     return jsonify(resp)
@@ -799,6 +840,8 @@ def api_debug_features():
 
         # ── 4. 打分：XGBoost permutation importance（如果可用）──
         base_auc = None
+        whitelist_auc_3d = None
+        whitelist_auc_1d = None
         if HAS_XGB:
             try:
                 X_raw = feat_df[feature_cols].values
