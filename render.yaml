@@ -51,6 +51,19 @@ services:
       - key: TELEGRAM_BOT_TOKEN
         sync: false
 
+  # Phase2/3 验收快照（每天 21:30 上海≈13:30 UTC；记一笔并出报告）
+  - type: cron
+    name: gold-predictor-validation
+    region: oregon
+    plan: free
+    schedule: "30 13 * * *"
+    command: python scripts/phase_validation.py
+    envVars:
+      - key: FRED_API_KEY
+        sync: false
+      - key: PYTHONUNBUFFERED
+        value: "1"
+
 databases:
   - name: gold-predictor-db
     plan: free

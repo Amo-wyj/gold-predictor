@@ -689,6 +689,45 @@ def api_timeframe():
         return jsonify({"status": "error", "error": str(e)}), 500
 
 
+@app.route("/api/validation")
+def api_validation():
+    """Phase2/3 验收报告（可读缓存；?refresh=1 重新计算）"""
+    force = request.args.get("refresh") in ("1", "true", "yes")
+    report_path = os.path.join(OUTPUT_DIR, "phase_validation_report.json")
+    if (not force) and os.path.exists(report_path):
+        try:
+            with open(report_path, encoding="utf-8") as f:
+                cached = json.load(f)
+            return jsonify({"status": "success", "cached": True, **cached})
+        except Exception:
+            pass
+    try:
+        # 动态加载脚本模块
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "phase_validation",
+            os.path.join(BASE_DIR, "scripts", "phase_validation.py"),
+        )
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        paths = mod._paths()
+        # 轻量：评估时顺带记快照
+        mod.log_today_snapshot(paths)
+        report = mod.build_report(paths)
+        paths["report_json"].write_text(
+            json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        paths["report_md"].write_text(mod.render_markdown(report), encoding="utf-8")
+        return jsonify({"status": "success", "cached": False, **report})
+    except Exception as e:
+        import traceback
+        return jsonify({
+            "status": "error",
+            "error": str(e),
+            "trace": traceback.format_exc()[-500:],
+        }), 500
+
+
 @app.route("/api/price")
 def api_price():
     """获取当前价格（真实数据，限流时回退模拟数据）"""

@@ -176,10 +176,14 @@ CFTC = {
     "enabled": True,
     "weight": 0.12,           # 周度大方向
     "cache_max_age_hours": 24,
+    "validation_min_weeks": 4,
+    "validation_hit_rate": 0.55,
 }
 
 TIMEFRAME = {
     "enabled": True,
     "weight": 0.05,           # 4h 与日线共振时小幅加权
+    "validation_min_days": 20,
+    "validation_edge": 0.05,  # AGREE 命中率需高于非 AGREE 至少 5pt
 }
 
