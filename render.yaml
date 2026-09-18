@@ -61,6 +61,10 @@ services:
     envVars:
       - key: FRED_API_KEY
         sync: false
+      - key: DATABASE_URL
+        fromDatabase:
+          name: gold-predictor-db
+          property: connectionString
       - key: PYTHONUNBUFFERED
         value: "1"
 

@@ -159,12 +159,9 @@ def log_today_snapshot(paths: Dict[str, Path]) -> Dict:
         "h4_label": (timeframe.get("h4") or {}).get("label"),
     }
 
-    # 同日去重重写
-    existing = [r for r in _read_jsonl(paths["validation_log"]) if r.get("date") != today]
-    existing.append(row)
-    with paths["validation_log"].open("w", encoding="utf-8") as f:
-        for r in existing:
-            f.write(json.dumps(r, ensure_ascii=False) + "\n")
+    from data.snapshot_store import upsert_row
+    backend = upsert_row(row, paths["validation_log"])
+    row["_store"] = backend
 
     # 同步确保 sentiment_history 有今日行
     sh = [r for r in _read_jsonl(paths["sentiment_history"]) if r.get("date") != today]
@@ -195,12 +192,13 @@ def evaluate_phase2(paths: Dict[str, Path], gold: pd.DataFrame) -> Dict:
     window = int(cfg.get("correlation_window_days", 14))
     thr = float(cfg.get("keep_threshold_corr", 0.30))
 
-    # 合并 sentiment_history + validation_log
+    from data.snapshot_store import load_rows
+    # 合并 sentiment_history + 持久化验收快照
     rows = {}
     for r in _read_jsonl(paths["sentiment_history"]):
         if r.get("date") is not None and r.get("sentiment_score") is not None:
             rows[r["date"]] = float(r["sentiment_score"])
-    for r in _read_jsonl(paths["validation_log"]):
+    for r in load_rows(paths["validation_log"]):
         if r.get("date") is not None and r.get("sentiment_score") is not None:
             rows[r["date"]] = float(r["sentiment_score"])
 
@@ -347,7 +345,8 @@ def evaluate_phase3_timeframe(paths: Dict[str, Path], gold: pd.DataFrame) -> Dic
     except Exception:
         min_n, edge_thr = 20, 0.05
 
-    rows = _read_jsonl(paths["validation_log"])
+    from data.snapshot_store import load_rows
+    rows = load_rows(paths["validation_log"])
     # 也允许只有 timeframe_daily 的单点（不够评估）
     samples = []
     for r in rows:
@@ -442,9 +441,12 @@ def build_report(paths: Dict[str, Path]) -> Dict:
         else:
             actions.append(f"继续观察 {block['phase']}：{block['reason']}")
 
+    from data.snapshot_store import load_rows, persistence_backend
     report = {
         "generated_at": datetime.now().isoformat(),
         "gold_last_close": float(gold["close"].iloc[-1]),
+        "snapshot_days": len(load_rows(paths["validation_log"])),
+        "persistence": persistence_backend(),
         "phases": [p2, p3c, p3t],
         "actions": actions,
         "summary": {

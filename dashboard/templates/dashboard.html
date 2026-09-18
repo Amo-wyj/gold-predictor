@@ -32,6 +32,7 @@
         </div>
         <div class="text-right">
             <div id="current-price" class="text-3xl font-bold text-yellow-400">--</div>
+            <div id="cmb-price" class="text-sm text-amber-200">招行积存金参考 --</div>
             <div id="price-change" class="text-sm">--</div>
         </div>
     </header>
@@ -182,6 +183,18 @@
         </div>
     </div>
 
+    <!-- 财经日历 / 验收进度 -->
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
+        <div class="card">
+            <h3 class="text-lg font-bold mb-4">📅 本周美国高影响事件</h3>
+            <div id="calendar-list" class="text-sm text-slate-300 space-y-2">加载中…</div>
+        </div>
+        <div class="card">
+            <h3 class="text-lg font-bold mb-4">🧪 Phase2/3 验收</h3>
+            <div id="validation-summary" class="text-sm text-slate-300 space-y-2">加载中…</div>
+        </div>
+    </div>
+
     <!-- 页脚 -->
     <footer class="text-center text-slate-500 text-sm mt-8">
         <p>更新时间: <span id="update-time">--</span></p>
@@ -212,6 +225,7 @@
                 if (data.price) {
                     document.getElementById('current-price').textContent = '$' + data.price.toFixed(2);
                 }
+                renderCmb(data.cmb);
 
                 if (data.prediction) {
                     updatePredictionCards(data.prediction);
@@ -421,6 +435,7 @@
                 if (data.price) {
                     const priceEl = document.getElementById('current-price');
                     priceEl.textContent = '$' + data.price.toFixed(2);
+                    renderCmb(data.cmb);
 
                     const changeEl = document.getElementById('price-change');
                     const change = data.change_pct;
@@ -432,6 +447,64 @@
             }
         }
 
+        function renderCmb(cmb) {
+            const el = document.getElementById('cmb-price');
+            if (!el) return;
+            if (cmb && cmb.cny_per_gram) {
+                el.textContent = `招行积存金参考 ${Number(cmb.cny_per_gram).toFixed(2)} 元/克`;
+                el.title = cmb.note || '未扣招行点差';
+            }
+        }
+
+        async function loadCalendar() {
+            const box = document.getElementById('calendar-list');
+            if (!box) return;
+            try {
+                const resp = await fetch('/api/calendar');
+                const data = await resp.json();
+                const events = data.events || [];
+                if (!events.length) {
+                    box.innerHTML = '<div class="text-slate-400">未来 7 天没有待发生的美国高影响事件。</div>';
+                    return;
+                }
+                box.innerHTML = events.slice(0, 6).map(ev => {
+                    const when = (ev.event_date_local || ev.event_date || '').replace('T', ' ').slice(0, 16);
+                    return `<div class="p-2 bg-slate-800 rounded">
+                        <div class="font-medium">${ev.event_name || ev.title_raw || '事件'}</div>
+                        <div class="text-xs text-slate-400">${when} · ${ev.impact || ''} · 预期 ${ev.forecast || '--'} / 前值 ${ev.previous || '--'}</div>
+                    </div>`;
+                }).join('');
+            } catch (e) {
+                box.textContent = '日历加载失败';
+            }
+        }
+
+        async function loadValidation() {
+            const box = document.getElementById('validation-summary');
+            if (!box) return;
+            try {
+                const resp = await fetch('/api/validation');
+                const data = await resp.json();
+                const phases = data.phases || [];
+                if (!phases.length) {
+                    box.textContent = data.error || '暂无验收报告';
+                    return;
+                }
+                const label = { WAIT: '观察中', KEEP: '保留', DROP: '建议关闭' };
+                box.innerHTML = phases.map(p => {
+                    const name = (p.phase || '').replace('phase2_news_sentiment', '新闻情绪')
+                        .replace('phase3_cftc', 'CFTC')
+                        .replace('phase3_timeframe', '日线×4h');
+                    return `<div class="flex justify-between gap-3 p-2 bg-slate-800 rounded">
+                        <span>${name}</span>
+                        <span class="text-slate-400">${label[p.verdict] || p.verdict} · ${p.n_samples ?? 0}/${p.required_samples ?? '-'}</span>
+                    </div>`;
+                }).join('') + `<div class="text-xs text-slate-500">快照 ${data.snapshot_days ?? 0} 天 · 存储 ${data.persistence || 'file'}</div>`;
+            } catch (e) {
+                box.textContent = '验收加载失败';
+            }
+        }
+
         // 初始化
         document.addEventListener('DOMContentLoaded', () => {
             loadTechnicalIndicators();
@@ -439,12 +512,18 @@
             loadIndicatorsChart();
             loadLivePrice();
             loadPrediction();
+            loadCalendar();
+            loadValidation();
 
             // 每分钟刷新
             setInterval(() => {
                 loadLivePrice();
                 loadPrediction();
             }, 60000);
+            setInterval(() => {
+                loadCalendar();
+                loadValidation();
+            }, 300000);
         });
 
         // 加载技术指标详情（独立接口）

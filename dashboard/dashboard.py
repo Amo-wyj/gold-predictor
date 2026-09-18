@@ -742,6 +742,13 @@ def api_predict():
         "h4": timeframe.get("h4") or {},
         "daily_signal": timeframe.get("daily_signal"),
     }
+    if resp.get("price"):
+        try:
+            from data.cmb_quote import to_cny_per_gram
+            resp["cmb"] = to_cny_per_gram(float(resp["price"]))
+        except Exception as e:
+            logger.warning(f"[api_predict] 积存金换算失败: {e}")
+            resp["cmb"] = {"error": str(e), "spread_included": False}
     if debug.get("errors"):
         resp["_debug"] = debug
     return jsonify(resp)
@@ -865,12 +872,18 @@ def api_price():
             current = float(hist['Close'].iloc[-1])
             prev = float(hist['Close'].iloc[-2]) if len(hist) > 1 else current
             change = (current / prev - 1) * 100
-            return jsonify({
+            payload = {
                 "price": current,
                 "change_pct": change,
                 "source": "yahoo",
-                "timestamp": hist.index[-1].isoformat()
-            })
+                "timestamp": hist.index[-1].isoformat(),
+            }
+            try:
+                from data.cmb_quote import to_cny_per_gram
+                payload["cmb"] = to_cny_per_gram(current)
+            except Exception as e:
+                logger.warning(f"[api_price] 积存金换算失败: {e}")
+            return jsonify(payload)
     except Exception as e:
         logger.warning(f"Yahoo 获取价格失败，回退到模拟数据: {e}")
 
