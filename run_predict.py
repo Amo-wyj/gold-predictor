@@ -161,6 +161,20 @@ def predict(use_mock=True, verbose=True):
             for t in (sa.get('sample_titles') or [])[:3]:
                 print(f"    - {t}")
 
+        # Phase3 CFTC / 4h
+        ca = result.get('cftc_analysis') or {}
+        if ca:
+            print("\n🏦 CFTC Managed Money (Phase3):")
+            print(f"    score: {ca.get('cftc_score', 0):+.3f} ({ca.get('cftc_label', '')})")
+            print(f"    report: {ca.get('report_date')} | MM_net={ca.get('mm_net')} | WoW={ca.get('wow_mm_net')}")
+        tf = result.get('timeframe_analysis') or {}
+        if tf:
+            print("\n⏱️ 多时间框架 (Phase3):")
+            print(f"    agreement: {tf.get('timeframe_agreement')} | score={tf.get('agreement_score', 0):+.3f}")
+            h4 = tf.get('h4') or {}
+            if h4:
+                print(f"    H4: {h4.get('label')} score={h4.get('score', 0):+.3f} bars={h4.get('bars')}")
+
     return result
 
 

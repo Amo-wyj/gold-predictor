@@ -156,6 +156,32 @@
         </div>
     </div>
 
+    <!-- Phase3 CFTC / 4h -->
+    <div class="card mb-6">
+        <h3 class="text-lg font-bold mb-4">🏦 CFTC 持仓 · ⏱️ 多时间框架</h3>
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <div class="text-center p-4 bg-slate-800 rounded-lg">
+                <div class="text-slate-400 text-sm">CFTC 分</div>
+                <div id="cftc-score" class="text-2xl font-bold mt-2">--</div>
+                <div id="cftc-label" class="text-sm text-slate-400">--</div>
+            </div>
+            <div class="text-center p-4 bg-slate-800 rounded-lg">
+                <div class="text-slate-400 text-sm">MM 净持仓</div>
+                <div id="cftc-mm" class="text-2xl font-bold mt-2">--</div>
+                <div id="cftc-date" class="text-sm text-slate-400">--</div>
+            </div>
+            <div class="text-center p-4 bg-slate-800 rounded-lg">
+                <div class="text-slate-400 text-sm">日线×4h</div>
+                <div id="tf-agree" class="text-xl font-bold mt-2">--</div>
+                <div id="tf-h4" class="text-sm text-slate-400">--</div>
+            </div>
+            <div class="text-center p-4 bg-slate-800 rounded-lg">
+                <div class="text-slate-400 text-sm">共振分</div>
+                <div id="tf-score" class="text-2xl font-bold mt-2">--</div>
+            </div>
+        </div>
+    </div>
+
     <!-- 页脚 -->
     <footer class="text-center text-slate-500 text-sm mt-8">
         <p>更新时间: <span id="update-time">--</span></p>
@@ -209,6 +235,27 @@
                     document.getElementById('sent-matches').textContent = (s.top_matches || []).join('  ') || '--';
                     const titles = document.getElementById('sent-titles');
                     titles.innerHTML = (s.sample_titles || []).map(t => `<div>• ${t}</div>`).join('');
+                }
+
+                // Phase3 CFTC / timeframe
+                if (data.cftc) {
+                    const c = data.cftc;
+                    const cs = Number(c.score ?? data.cftc_score ?? 0);
+                    const cel = document.getElementById('cftc-score');
+                    cel.textContent = (cs >= 0 ? '+' : '') + cs.toFixed(3);
+                    cel.className = 'text-2xl font-bold mt-2 ' + (cs > 0.15 ? 'text-green-400' : (cs < -0.15 ? 'text-red-400' : 'text-slate-200'));
+                    document.getElementById('cftc-label').textContent = c.label || '--';
+                    document.getElementById('cftc-mm').textContent = (c.mm_net != null ? Number(c.mm_net).toLocaleString() : '--');
+                    document.getElementById('cftc-date').textContent = c.report_date || '--';
+                }
+                if (data.timeframe) {
+                    const t = data.timeframe;
+                    const amap = {AGREE_BULL:'共振看涨', AGREE_BEAR:'共振看跌', DIVERGE:'背离', MIXED:'混合', UNKNOWN:'未知', NO_DATA:'无数据', ERROR:'失败', DISABLED:'关闭'};
+                    document.getElementById('tf-agree').textContent = amap[t.agreement || data.timeframe_agreement] || (t.agreement || '--');
+                    const h4 = t.h4 || {};
+                    document.getElementById('tf-h4').textContent = h4.label ? `${h4.label} (${h4.score ?? ''})` : '--';
+                    const ts = Number(t.agreement_score ?? 0);
+                    document.getElementById('tf-score').textContent = (ts >= 0 ? '+' : '') + ts.toFixed(3);
                 }
 
                 document.getElementById('update-time').textContent = new Date().toLocaleString('zh-CN');

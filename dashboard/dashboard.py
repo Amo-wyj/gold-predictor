@@ -615,6 +615,37 @@ def api_predict():
         "sample_titles": sent.get("sample_titles", [])[:3],
         "updated_at": sent.get("updated_at"),
     }
+    # P3 CFTC / timeframe：优先读缓存文件
+    try:
+        from data.cftc_collector import CFTCCollector
+        cftc = CFTCCollector()._load_json_cache() or {}
+    except Exception:
+        cftc = {}
+    try:
+        import os as _os
+        tf_path = _os.path.join(OUTPUT_DIR, "timeframe_daily.json")
+        timeframe = {}
+        if _os.path.exists(tf_path):
+            with open(tf_path, encoding="utf-8") as f:
+                timeframe = json.load(f)
+    except Exception:
+        timeframe = {}
+    resp["cftc_score"] = cftc.get("cftc_score", 0.0)
+    resp["cftc"] = {
+        "score": cftc.get("cftc_score", 0.0),
+        "label": cftc.get("cftc_label", "NO_DATA"),
+        "report_date": cftc.get("report_date"),
+        "mm_net": cftc.get("mm_net"),
+        "wow_mm_net": cftc.get("wow_mm_net"),
+        "mm_net_pct_oi": cftc.get("mm_net_pct_oi"),
+    }
+    resp["timeframe_agreement"] = timeframe.get("timeframe_agreement", "UNKNOWN")
+    resp["timeframe"] = {
+        "agreement": timeframe.get("timeframe_agreement", "UNKNOWN"),
+        "agreement_score": timeframe.get("agreement_score", 0.0),
+        "h4": timeframe.get("h4") or {},
+        "daily_signal": timeframe.get("daily_signal"),
+    }
     if debug.get("errors"):
         resp["_debug"] = debug
     return jsonify(resp)
@@ -629,6 +660,30 @@ def api_sentiment():
         data = get_sentiment(force_refresh=force)
         global _latest_sentiment
         _latest_sentiment = data
+        return jsonify({"status": "success", **data})
+    except Exception as e:
+        return jsonify({"status": "error", "error": str(e)}), 500
+
+
+@app.route("/api/cftc")
+def api_cftc():
+    """Phase3：CFTC Managed Money 持仓"""
+    force = request.args.get("refresh") in ("1", "true", "yes")
+    try:
+        from data.cftc_collector import get_cftc_signal
+        data = get_cftc_signal(force_refresh=force)
+        return jsonify({"status": "success", **data})
+    except Exception as e:
+        return jsonify({"status": "error", "error": str(e)}), 500
+
+
+@app.route("/api/timeframe")
+def api_timeframe():
+    """Phase3：日线 vs 4h 共振"""
+    daily = request.args.get("daily_signal", "NEUTRAL")
+    try:
+        from data.timeframe_analyzer import analyze_timeframes
+        data = analyze_timeframes(daily)
         return jsonify({"status": "success", **data})
     except Exception as e:
         return jsonify({"status": "error", "error": str(e)}), 500

@@ -3,5 +3,6 @@ __pycache__/
 .DS_Store/
 output/
 data/news/*.jsonl
+data/cot_history.csv
 *.parquet
 

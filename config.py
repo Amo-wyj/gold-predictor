@@ -164,11 +164,22 @@ CROSS_ASSET_SYMBOLS = {
 # 验收：连续 2 周记录 sentiment_score 与次日金价涨跌相关性 > 0.3 才保留
 NEWS_SENTIMENT = {
     "enabled": True,
-    "weight": 0.12,           # ensemble 权重（原 macro 0.10 槽位）
+    "weight": 0.10,           # P3 略降，给 CFTC 腾权重
     "cache_max_age_sec": 3600,
     "min_headlines": 3,
-    # 相关性观察：output/sentiment_history.jsonl
     "correlation_window_days": 14,
     "keep_threshold_corr": 0.30,
+}
+
+# === Phase 3：CFTC + 多时间框架 ===
+CFTC = {
+    "enabled": True,
+    "weight": 0.12,           # 周度大方向
+    "cache_max_age_hours": 24,
+}
+
+TIMEFRAME = {
+    "enabled": True,
+    "weight": 0.05,           # 4h 与日线共振时小幅加权
 }
 

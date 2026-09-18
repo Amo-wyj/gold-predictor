@@ -24,12 +24,14 @@ class EnsemblePredictor:
     # P1 变更：XGBoost 替换 GBM(GradientBoosting)，AUC > 0.65 才接入
     # XGBoost 验证失败时自动降级回 GBM
     MODEL_WEIGHTS = {
-        "arima": 0.25,
-        "xgboost": 0.45,   # P1: XGBoost 原生概率替代 GBM 蒙特卡洛模拟
-        "gbm": 0.00,        # GBM 保留学名（仅作降级备选，不参与默认 ensemble）
-        "technical": 0.18,  # P2: 略降，腾出情绪权重
-        "sentiment": 0.12,  # P2: 规则版新闻情绪
-        "macro": 0.00,      # 仍只做展示，不进加权（原 0.10 已让给 sentiment）
+        "arima": 0.23,
+        "xgboost": 0.40,   # P3: 略降，给 CFTC/4h 腾权重
+        "gbm": 0.00,
+        "technical": 0.10,
+        "sentiment": 0.10,  # P2
+        "cftc": 0.12,       # P3 周度持仓
+        "timeframe": 0.05,  # P3 4h 共振
+        "macro": 0.00,
     }
     
     # 技术指标阈值
@@ -51,13 +53,19 @@ class EnsemblePredictor:
         self.current_price = None
         self.current_macro = None
         self.current_sentiment: Dict = {}
+        self.current_cftc: Dict = {}
+        self.current_timeframe: Dict = {}
         self.last_prediction_time = None
-        # 允许从 config 覆盖情绪权重
+        # 允许从 config 覆盖权重
         try:
-            from config import NEWS_SENTIMENT
+            from config import NEWS_SENTIMENT, CFTC, TIMEFRAME
+            self.MODEL_WEIGHTS = dict(self.MODEL_WEIGHTS)
             if NEWS_SENTIMENT.get("enabled") and NEWS_SENTIMENT.get("weight") is not None:
-                self.MODEL_WEIGHTS = dict(self.MODEL_WEIGHTS)
                 self.MODEL_WEIGHTS["sentiment"] = float(NEWS_SENTIMENT["weight"])
+            if CFTC.get("enabled") and CFTC.get("weight") is not None:
+                self.MODEL_WEIGHTS["cftc"] = float(CFTC["weight"])
+            if TIMEFRAME.get("enabled") and TIMEFRAME.get("weight") is not None:
+                self.MODEL_WEIGHTS["timeframe"] = float(TIMEFRAME["weight"])
         except Exception:
             pass
     
@@ -301,6 +309,10 @@ class EnsemblePredictor:
         sentiment = self.analyze_sentiment()
         self.current_sentiment = sentiment
 
+        # 4c. Phase3 CFTC（先算，不依赖日线信号）
+        cftc = self.analyze_cftc()
+        self.current_cftc = cftc
+
         # 5. 集成输出（XGBoost 优先，GBM 降级兜底）
         active_model = "xgb" if xgb_results else ("gbm" if gbm_results else None)
         final_prediction = self._ensemble_output(
@@ -309,7 +321,29 @@ class EnsemblePredictor:
             tech_analysis,
             active_model=active_model,
             sentiment=sentiment,
+            cftc=cftc,
+            timeframe=None,  # 先出日线信号，再算 4h 共振
         )
+
+        # 4d. Phase3 4h 与日线共振（用 1d 信号）
+        daily_sig = (final_prediction.get("horizon_1d") or {}).get("signal", "NEUTRAL")
+        timeframe = self.analyze_timeframe(daily_sig)
+        self.current_timeframe = timeframe
+
+        # 若 4h 有明确方向，用小权重微调一次 1d/3d/5d 概率（不重跑全模型）
+        tf_w = self.MODEL_WEIGHTS.get("timeframe", 0.0)
+        if timeframe and tf_w > 0 and timeframe.get("timeframe_agreement") in ("AGREE_BULL", "AGREE_BEAR", "MIXED"):
+            a = float(timeframe.get("agreement_score") or 0.0)
+            for key, node in final_prediction.items():
+                if not key.startswith("horizon_") or not isinstance(node, dict):
+                    continue
+                up = float(node.get("probability_up", 0.5))
+                # 小幅混合
+                mix = up * (1 - tf_w) + ((a + 1) / 2) * tf_w
+                mix = float(np.clip(mix, 0.05, 0.95))
+                node["probability_up"] = mix
+                node["probability_down"] = 1 - mix
+                node["timeframe_agreement"] = timeframe.get("timeframe_agreement")
 
         return {
             "prediction": final_prediction,
@@ -320,12 +354,16 @@ class EnsemblePredictor:
             "macro_analysis": self.analyze_macro(),
             "sentiment_analysis": sentiment,
             "sentiment_score": sentiment.get("sentiment_score", 0.0),
+            "cftc_analysis": cftc,
+            "cftc_score": cftc.get("cftc_score", 0.0),
+            "timeframe_analysis": timeframe,
+            "timeframe_agreement": timeframe.get("timeframe_agreement"),
             "current_price": self.current_price,
             "timestamp": datetime.now().isoformat(),
-            "_xgb_passes_threshold": self.xgboost_passes_threshold,  # P1 debug
+            "_xgb_passes_threshold": self.xgboost_passes_threshold,
             "_ml_model": (self.xgboost_model.model_name
-                          if self.xgboost_model else None),  # P1: 实际ML模型名
-            "_ml_cv_auc": self._ml_cv_auc,  # P1: 各horizon CV AUC（已由上述逻辑填充）
+                          if self.xgboost_model else None),
+            "_ml_cv_auc": self._ml_cv_auc,
         }
 
     def analyze_sentiment(self) -> Dict:
@@ -345,7 +383,6 @@ class EnsemblePredictor:
             n = int(result.get("n_headlines") or 0)
             min_n = int(NEWS_SENTIMENT.get("min_headlines", 3))
             if n < min_n and result.get("sentiment_label") not in ("DISABLED",):
-                # 样本过少时降权为中性，避免噪声
                 result = dict(result)
                 result["sentiment_score"] = 0.0
                 result["sentiment_label"] = "TOO_FEW"
@@ -360,13 +397,39 @@ class EnsemblePredictor:
                 "error": str(e)[:120],
             }
 
+    def analyze_cftc(self) -> Dict:
+        """Phase 3：CFTC Managed Money 净持仓。"""
+        try:
+            from config import CFTC
+            if not CFTC.get("enabled", True):
+                return {"cftc_score": 0.0, "cftc_label": "DISABLED"}
+            from data.cftc_collector import get_cftc_signal
+            return get_cftc_signal(force_refresh=False)
+        except Exception as e:
+            logger.warning(f"[Ensemble] CFTC 失败: {e}")
+            return {"cftc_score": 0.0, "cftc_label": "ERROR", "error": str(e)[:120]}
+
+    def analyze_timeframe(self, daily_signal: str) -> Dict:
+        """Phase 3：4h 与日线共振。"""
+        try:
+            from config import TIMEFRAME
+            if not TIMEFRAME.get("enabled", True):
+                return {"timeframe_agreement": "DISABLED", "agreement_score": 0.0}
+            from data.timeframe_analyzer import analyze_timeframes
+            return analyze_timeframes(daily_signal)
+        except Exception as e:
+            logger.warning(f"[Ensemble] timeframe 失败: {e}")
+            return {"timeframe_agreement": "ERROR", "agreement_score": 0.0, "error": str(e)[:120]}
+
     def _ensemble_output(
         self,
         arima: Dict,
-        ml_model: Dict,  # XGBoost 或 GBM（统一接口）
+        ml_model: Dict,
         technical: Dict,
-        active_model: str = "xgb",  # "xgb" | "gbm"
+        active_model: str = "xgb",
         sentiment: Optional[Dict] = None,
+        cftc: Optional[Dict] = None,
+        timeframe: Optional[Dict] = None,
     ) -> Dict:
         """集成各模型输出（XGBoost 优先，GBM 降级兜底）"""
 
@@ -412,6 +475,14 @@ class EnsemblePredictor:
                 sent_prob = float(np.clip((s + 1) / 2, 0.2, 0.8))
                 prob_up_list.append(sent_prob)
                 weights.append(sent_w)
+
+            # Phase3 CFTC
+            cftc_w = self.MODEL_WEIGHTS.get("cftc", 0.0)
+            if cftc and cftc_w > 0:
+                cs = float(cftc.get("cftc_score") or 0.0)
+                cftc_prob = float(np.clip((cs + 1) / 2, 0.2, 0.8))
+                prob_up_list.append(cftc_prob)
+                weights.append(cftc_w)
             
             # 加权平均
             if prob_up_list:
